@@ -164,7 +164,13 @@ pub(crate) fn run(command: &mut Command, limit: usize) -> Result<Output> {
             .stderr(Stdio::piped())
             .process_group(0)
             .spawn()
-            .map_err(|e| format!("Cannot start command: {e}"))?,
+            .map_err(|e| {
+                if e.kind() == io::ErrorKind::NotFound {
+                    format!("Cannot start command (not found): {e}")
+                } else {
+                    format!("Cannot start command: {e}")
+                }
+            })?,
         false,
     );
     let mut stdout = Capture::new(running.0.stdout.take().ok_or("Missing stdout")?, limit)?;

@@ -5,7 +5,7 @@ owns Git reads, anchoring and storage; a thin JavaScript mod draws the native
 panel. Uses **herdr-core (`hc`)**, never the older Herdr TUI plugin system.
 
 Supports branch-wide review, syntax coloring and
-read-only GitHub review threads. No commit controls or full-file editor.
+GitHub review threads with explicit replies. No commit controls or full-file editor.
 
 ![Inline review note in Herdr App](../preview.png)
 
@@ -81,6 +81,13 @@ keeps the last focused chat from that tab. With multiple chats, focus the intend
 one first; another tab is never chosen automatically. Each click resolves the
 current chat again. Working/blocked sessions stay bound, but sending becomes
 available only when they are idle.
+
+An ordinary folder outside Git shows a neutral **Not a Git checkout** state,
+not an error. With no folder selected, the panel asks you to select a checkout.
+**Refresh** checks again, including after initializing Git in the same folder.
+Drafts stay in memory; stale review actions stay unavailable until a checkout
+loads successfully. Permission, repository corruption, and connection failures
+still appear as errors.
 
 An unreachable machine shows a connection error with **Retry**, **Machines…**
 and optional technical **Details**, not an empty checkout. The last loaded diff
@@ -209,7 +216,20 @@ still use the app machine's `gh`; no helper installation there is needed.
 delivery or export. Threads include reviewer replies and stored diff context.
 New replies require reselection; resolved, incomplete, sent or uncertain thread
 versions cannot be sent. Failed refreshes preserve the last result with an
-error and prevent sending threads. Nothing posts replies or resolves threads.
+error and prevent sending threads. Send review never posts replies or resolves threads.
+
+**Reply** opens a separate composer on an existing thread. **Post to GitHub**
+posts as the account authenticated through local `gh`, independently of the agent.
+The helper rechecks the exact thread version before posting. If new replies arrive,
+review them and click Reply again to accept that version. Drafts stay in memory
+per checkout/thread. An unconfirmed post preserves its draft and a durable receipt;
+no automatic retry occurs. Use **I checked GitHub · Post again** only after verifying
+the reply is absent, since retrying can create a duplicate. This does not resolve
+threads or create top-level PR comments.
+
+If `gh` is missing, local reviews still work. The GitHub tab links to
+https://cli.github.com and explains how to run `gh auth login` on the app machine.
+Cached threads stay visible, but GitHub actions wait for a successful Refresh.
 
 ## Storage and safety
 
@@ -265,7 +285,7 @@ herdr-annotator request '{"op":"snapshot","scope":{"repo":"/path/to/checkout","m
 
 Or pipe the same JSON to `herdr-annotator request`. Replies are
 `{"ok":true,"data":...}` or `{"ok":false,"error":"..."}` with nonzero exit.
-Operations: `snapshot`, `add`, `resolve`, `read`, `export`, `send`, `github`, `github_read`.
+Operations: `snapshot`, `add`, `resolve`, `read`, `export`, `send`, `github`, `github_read`, `github_reply`.
 The engine's public Rust interface is
 `Engine::handle(Request)`, also used by integration tests.
 

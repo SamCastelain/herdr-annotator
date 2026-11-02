@@ -1,6 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, visibleComments, unreadItems } from "../mods/annotator/review.js";
+import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, visibleComments, unreadItems, snapshotFailure } from "../mods/annotator/review.js";
+
+test("ordinary folders are a distinct empty-checkout state, including remote diagnostics", () => {
+  const diagnostic = "fatal: not a git repository (or any of the parent directories): .git";
+  for (const error of [
+    `Git command failed (128): ${diagnostic}`,
+    `Command failed (128): ${diagnostic}`,
+    `Git command failed (1): ${JSON.stringify({ error: { kind: "command_failed", message: diagnostic } })}`,
+  ]) assert.equal(snapshotFailure(error, "manjaro").kind, "not-repository");
+});
+
+test("permission, corrupt-repository, and connectivity failures never masquerade as empty folders", () => {
+  for (const error of [
+    "fatal: detected dubious ownership in repository at '/checkout'",
+    "fatal: unable to read tree: deadbeef",
+    "fatal: cannot change to '/checkout': Permission denied",
+    "fatal: bad object HEAD",
+  ]) assert.equal(snapshotFailure(error).kind, "error");
+  assert.equal(snapshotFailure("Connection timed out", "manjaro").kind, "offline");
+});
 
 test("resolved visibility composes with unread filtering without changing saved notes or eligibility", () => {
   const items = [

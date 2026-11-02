@@ -37,6 +37,16 @@ impl Engine {
     }
 
     fn handle_request(&self, request: Request) -> Result<Value> {
+        if let Request::GithubReply {
+            scope,
+            thread,
+            body,
+            reply_id,
+            retry,
+        } = &request
+        {
+            return github::reply(&self.state_dir, scope, thread, body, reply_id, *retry);
+        }
         if let Request::GithubRead {
             scope,
             thread,
@@ -176,8 +186,8 @@ impl Engine {
                     json!({"snapshot": snapshot, "comments": comments, "github": cache.as_ref().map(github::Cache::view)}),
                 );
             }
-            Request::Github { .. } | Request::GithubRead { .. } => {
-                unreachable!("GitHub reads are handled before diff acquisition")
+            Request::Github { .. } | Request::GithubRead { .. } | Request::GithubReply { .. } => {
+                unreachable!("GitHub operations are handled before diff acquisition")
             }
         }
         let comments = review.comments(&store.comments);

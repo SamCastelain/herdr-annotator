@@ -106,6 +106,14 @@ pub enum Request {
         thread: ThreadRef,
         read: bool,
     },
+    GithubReply {
+        scope: Scope,
+        thread: ThreadRef,
+        body: String,
+        reply_id: String,
+        #[serde(default)]
+        retry: bool,
+    },
     Export {
         scope: Scope,
         revision: String,
@@ -144,6 +152,7 @@ impl Request {
             | Self::Resolve { scope, .. }
             | Self::Read { scope, .. }
             | Self::GithubRead { scope, .. }
+            | Self::GithubReply { scope, .. }
             | Self::Export { scope, .. }
             | Self::Send { scope, .. }
             | Self::Github { scope, .. } => scope,
@@ -157,7 +166,9 @@ impl Request {
             | Self::Read { view, .. }
             | Self::Export { view, .. }
             | Self::Send { view, .. } => view.clone(),
-            Self::Github { .. } | Self::GithubRead { .. } => ViewSpec::default(),
+            Self::Github { .. } | Self::GithubRead { .. } | Self::GithubReply { .. } => {
+                ViewSpec::default()
+            }
         }
     }
 }

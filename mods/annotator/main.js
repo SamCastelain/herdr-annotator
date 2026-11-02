@@ -31,6 +31,7 @@ export default class Annotator extends View {
     this.error = null; this.notice = null; this.context = null;
     this.snapshotError = null; this.showErrorDetails = false;
     this.sessions = new Map(); this.exportText = null;
+    this.githubDrafts = new Map();
     this.full = props()?.presentation === "full"; this.onlyUnread = false;
     const preferences = this.fullSettings();
     this.commentsOpen = preferences.commentsOpen;
@@ -179,7 +180,23 @@ export default class Annotator extends View {
 
   snapshotFailed(error, scope) {
     this.snapshotError = snapshotFailure(error, scope.machine);
-    this.error = this.snapshotError.message;
+    this.error = this.snapshotError.kind === "not-repository" ? null : this.snapshotError.message;
+    if (this.snapshotError.kind === "not-repository") this.githubRefresh.invalidate();
+  }
+
+  emptyCheckout(t) {
+    const scope = location().scope;
+    return v_flex().id("review-empty-checkout").size_full().min_h(0).bg(t.background).text_color(t.foreground)
+      .child(h_flex().h(40).px(12).gap(8).items_center().flex_none().bg(t.chrome)
+        .child(div().font_semibold().text_size(14).child(this.full ? "Review" : "Changes"))
+        .child(div().flex_1())
+        .child(this.button("empty-refresh", this.busy ? "Checking…" : "↻ Refresh", cx => this.refresh(cx, true))))
+      .child(v_flex().flex_1().min_h(0).p(20).gap(10).justify_center()
+        .child(div().font_semibold().text_size(14).child(scope.repo ? "Not a Git checkout" : "Select a Git checkout"))
+        .child(div().text_size(12).text_color(t.muted).child("Open a folder with a Git repository to review its changes."))
+        .when(Boolean(scope.repo), el => el.child(div().w_full().truncate().text_size(11).text_color(t.dim)
+          .child(`${scope.machine ? scope.machine + " · " : ""}${scope.repo}`)))
+        .when(Boolean(this.editor.value().trim()), el => el.child(div().text_size(12).text_color(t.muted).child("Your unsaved draft is kept. Return to a Git checkout to continue."))));
   }
 
   errorCard(t) {
@@ -217,7 +234,9 @@ export default class Annotator extends View {
       if (!(force && this.snapshotError)) { this.notice = "Save or cancel your draft before refreshing."; cx.notify(); return; }
     }
     const current = location();
-    if (!current.scope.repo) { this.error = "Select a space with a Git checkout."; return; }
+    if (!current.scope.repo) {
+      this.error = null; this.snapshotError = { kind: "not-repository" }; cx.notify(); return;
+    }
     if (!force && this.machineUnavailable(current.scope)) {
       this.snapshotFailed(`Machine ${current.scope.machine} is unavailable`, current.scope); cx.notify(); return;
     }
@@ -380,9 +399,52 @@ export default class Annotator extends View {
     });
   }
 
+  githubReplyId() { return `reply-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+
+  beginGithubReply(thread, cx) {
+    const key = JSON.stringify([this.context, thread.id]);
+    let draft = this.githubDrafts.get(key);
+    if (!draft) {
+      const editor = TextareaState.new({ placeholder: "Reply to this GitHub thread…", rows: 3 });
+      editor.on("change", (_event, cx) => cx.notify());
+      draft = { editor, id: this.githubReplyId(), status: null, error: null };
+      this.githubDrafts.set(key, draft);
+    }
+    // Clicking Reply explicitly accepts the currently displayed thread version.
+    draft.thread = { id: thread.id, fingerprint: thread.fingerprint };
+    draft.editor.focus(); cx.notify();
+  }
+
+  postGithubReply(thread, cx, retry = false) {
+    const context = this.context, key = JSON.stringify([context, thread.id]);
+    const draft = this.githubDrafts.get(key);
+    if (this.busy || this.snapshotError || this.github?.error || !this.data || contextKey() !== context
+      || !draft?.editor.value().trim() || (draft.status === "uncertain" && !retry)) return;
+    const body = draft.editor.value(), scope = this.data.snapshot.scope;
+    this.busy = true; draft.error = null; this.notice = null;
+    cx.spawn(async cx => {
+      try {
+        const data = await this.request({ op: "github_reply", scope, thread: draft.thread, body, reply_id: draft.id, retry });
+        draft.id = data.reply_id; draft.status = data.reply.status; draft.error = data.reply.error;
+        if (data.reply.status === "confirmed") {
+          if (draft.editor.value() === body) this.githubDrafts.delete(key);
+          else { draft.id = this.githubReplyId(); draft.status = null; }
+        }
+        if (contextKey() === context) {
+          this.githubRefresh.replace(data.github, context);
+          if (data.reply.status === "confirmed") this.notice = "Reply posted to GitHub.";
+        }
+      } catch (e) {
+        draft.status = "uncertain"; draft.error = String(e);
+      } finally { this.busy = false; cx.notify(); }
+    });
+    cx.notify();
+  }
+
   githubCard(thread, t) {
     const queued = this.threadQueue.has(thread.id);
     const enabled = !thread.resolved && !thread.delivery && !thread.incomplete && !this.github?.error;
+    const key = JSON.stringify([this.context, thread.id]), draft = this.githubDrafts.get(key);
     return v_flex().id(`thread-${thread.id}`).m(8).p(10).gap(7).rounded(8).bg(t.surface).border_1().border_color(t.border)
       .child(div().text_size(10.5).text_color(thread.read ? t.dim : t.accent).child(thread.read ? "Read" : "● Unread"))
       .child(div().font_semibold().text_size(12).child(`${thread.path}:${thread.start_line ?? thread.line ?? "?"}${thread.start_line ? `–${thread.line}` : ""} · ${thread.side}`))
@@ -390,14 +452,25 @@ export default class Annotator extends View {
       .children(thread.comments.map(c => v_flex().gap(3)
         .child(div().text_size(11).text_color(t.accent).child(`@${c.author}`))
         .child(div().text_size(12).child(c.body))))
-      .child(h_flex().gap(5)
+      .child(h_flex().gap(5).flex_wrap()
+        .child(this.button(`reply-thread-${thread.id}`, "Reply", cx => this.beginGithubReply(thread, cx), !thread.incomplete && !this.github?.error))
         .child(this.button(`read-thread-${thread.id}`, thread.read ? "Mark unread" : "Mark read", cx => this.markGithubRead(thread, cx)))
         .child(this.button(`queue-${thread.id}`, queued ? "Remove from review" : "Add to review", cx => {
           if (queued) this.threadQueue.delete(thread.id);
           else this.threadQueue.set(thread.id, { id: thread.id, fingerprint: thread.fingerprint });
           cx.notify();
         }, enabled, "secondary"))
-        .child(this.button(`fix-${thread.id}`, "Fix thread", cx => this.sendToSession(cx, thread), enabled && !this.editor.value().trim() && this.currentSession()?.status === "idle", "primary")));
+        .child(this.button(`fix-${thread.id}`, "Fix thread", cx => this.sendToSession(cx, thread), enabled && !this.editor.value().trim() && this.currentSession()?.status === "idle", "primary")))
+      .when(Boolean(draft), el => el.child(v_flex().gap(7)
+        .child(div().text_size(11).text_color(t.muted).child("Posts as your signed-in GitHub account. Does not send to the agent."))
+        .child(div().p(8).rounded(6).bg(t.background).border_1().border_color(t.border)
+          .child(Textarea.new(draft.editor).h(85).w_full().text_size(13)))
+        .when(Boolean(draft.error), el => el.child(div().text_size(12).text_color(t.ansi3).child(draft.error)))
+        .when(draft.status === "uncertain", el => el.child(div().text_size(11).text_color(t.ansi3).child("Posting is not confirmed. Check the thread on GitHub before posting again; a retry could duplicate your reply.")))
+        .child(h_flex().gap(5).flex_wrap()
+          .child(this.button(`cancel-reply-${thread.id}`, "Cancel", cx => { this.githubDrafts.delete(key); cx.notify(); }))
+          .child(this.button(`post-reply-${thread.id}`, "Post to GitHub", cx => this.postGithubReply(thread, cx), Boolean(draft.editor.value().trim()) && draft.status !== "uncertain" && !this.github?.error, "primary"))
+          .when(draft.status === "uncertain", el => el.child(this.button(`retry-reply-${thread.id}`, "I checked GitHub · Post again", cx => this.postGithubReply(thread, cx, true), Boolean(draft.editor.value().trim()) && !this.github?.error))))));
   }
 
   button(id, text, action, enabled = true, variant = "quiet") {
@@ -518,6 +591,7 @@ export default class Annotator extends View {
     const t = theme();
     const current = contextKey() === this.context;
     if (!current) return div().p(12).text_color(t.dim).child("Finishing the previous worktree's request…");
+    if (this.snapshotError?.kind === "not-repository") return this.emptyCheckout(t);
     if (this.full) return renderFull(this, cx);
     const data = current ? this.data : null;
     const files = data?.snapshot.files ?? [];
@@ -607,7 +681,7 @@ export default class Annotator extends View {
           .child(div().font_semibold().child(allComments.length ? "No comments match these filters" : "Your review starts with a comment"))
           .child(div().text_size(12).text_color(t.muted).child(allComments.length ? "Show resolved or turn off Unread only to see saved notes." : "Choose a file in Code, select a line, and write what should change. Save several comments, then send them together."))))))
       .when(this.view === "github", el => el.child(v_flex().id("review-github").flex_1().min_h(0).overflow_y_scrollbar()
-        .child(div().p(10).text_size(11).text_color(t.muted).child(this.githubBusy ? "Checking GitHub…" : this.github?.pull_request ? `${this.github.pull_request.url} · polls every 5 minutes · read-only` : "No open PR found for this branch. Refresh checks GitHub now."))
+        .child(div().p(10).text_size(11).text_color(t.muted).child(this.githubBusy ? "Checking GitHub…" : this.github?.error ? "GitHub unavailable · local reviews still work" : this.github?.pull_request ? `${this.github.pull_request.url} · polls every 5 minutes` : "No open PR found for this branch. Refresh checks GitHub now."))
         .when(Boolean(this.github?.error), el => el.child(div().p(10).text_color(t.ansi3).child(this.github.error)))
         .when(Boolean(this.github?.limited), el => el.child(div().p(10).text_color(t.ansi3).child("GitHub thread limit reached; more threads exist on the PR.")))
         .children(unreadItems(threads, this.onlyUnread).map(thread => this.githubCard(thread, t)))))))

@@ -201,7 +201,7 @@ export function renderFull(self, cx) {
       .child(self.button("full-toggle-comments", self.commentsOpen ? "Hide comments pane" : "Comments pane", cx => {
         self.commentsOpen = !self.commentsOpen; self.rememberFull({ commentsOpen: self.commentsOpen }); setShared("annotator.fullComments", self.commentsOpen); cx.notify();
       }, true, self.commentsOpen ? "secondary" : "quiet"))
-      .child(div().text_size(11).text_color(t.dim).child("Read markers are local · GitHub is read-only")))
+       .child(div().text_size(11).text_color(t.dim).child("Read markers are local · replies post only on request")))
     .child(h_resizable(self.commentsOpen ? "annotator-reader-with-comments" : "annotator-reader").flex_1().min_h(0)
       .on_resize((sizes, cx) => { self.fullWidths = sizes.slice(0, 2); self.commentWidth = sizes[2] ?? self.commentWidth; setShared("annotator.fullWidths", sizes); cx.notify(); })
       .child(resizable_panel().size(self.fullWidths[0]).size_range(160, 500).visible(self.filesOpen)

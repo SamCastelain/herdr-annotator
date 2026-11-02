@@ -137,6 +137,69 @@ test("resolved visibility is restored from shared settings and composes with Unr
   assert.ok(h.nodes.some(n => n.id === "note-note1"));
 });
 
+for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} posts GitHub replies only through its explicit button`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  const thread = { id: "reply1", fingerprint: "v1", path: "a.rs", line: 2, side: "RIGHT", comments: [{ author: "reviewer", body: "Handle empty input" }] };
+  h.state.agents[0].status = "working"; // Posting to GitHub is independent of agent delivery.
+  h.mod.github = { threads: [thread] }; h.mod.view = "github"; h.mod.render(h.cx);
+  const before = h.requests.length;
+  h.nodes.filter(n => n.id === "reply-thread-reply1").at(-1).events.on_click(null, h.cx);
+  const draft = [...h.mod.githubDrafts.values()][0]; draft.editor.set_value("Fixed, thanks.");
+  h.mod.render(h.cx); assert.equal(h.requests.length, before);
+  h.mod.threadQueue.set(thread.id, { id: thread.id, fingerprint: "v1" });
+  h.state.reply = async request => ({ code: 0, stdout: JSON.stringify({ ok: true, data: {
+    github: { threads: [{ ...thread, fingerprint: "v2" }] }, reply_id: request.reply_id, reply: { status: "confirmed", error: null },
+  } }) });
+  h.nodes.filter(n => n.id === "post-reply-reply1").at(-1).events.on_click(null, h.cx);
+  h.mod.postGithubReply(thread, h.cx); // Double-click guard.
+  await h.drain();
+  const posts = h.requests.filter(r => r.op === "github_reply");
+  assert.equal(posts.length, 1); assert.equal(posts[0].body, "Fixed, thanks.");
+  assert.equal(posts[0].retry, false); assert.equal(h.mod.githubDrafts.size, 0);
+  assert.equal(h.mod.threadQueue.size, 0); assert.equal(h.requests.filter(r => r.op === "send").length, 0);
+});
+
+test("uncertain GitHub reply keeps text and never retries without the explicit checked action", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const thread = { id: "reply1", fingerprint: "v1", comments: [] };
+  h.mod.github = { threads: [thread] }; h.mod.beginGithubReply(thread, h.cx);
+  const draft = [...h.mod.githubDrafts.values()][0]; draft.editor.set_value("Keep this reply");
+  h.state.reply = async request => ({ code: 0, stdout: JSON.stringify({ ok: true, data: {
+    github: { threads: [thread] }, reply_id: request.reply_id, reply: { status: request.retry ? "confirmed" : "uncertain", error: "Lost response" },
+  } }) });
+  h.mod.postGithubReply(thread, h.cx); await h.drain();
+  const before = h.requests.length;
+  assert.equal(draft.editor.value(), "Keep this reply"); assert.equal(draft.status, "uncertain");
+  h.mod.postGithubReply(thread, h.cx); await h.drain(); assert.equal(h.requests.length, before);
+  h.mod.postGithubReply(thread, h.cx, true); await h.drain();
+  assert.equal(h.requests.at(-1).retry, true); assert.equal(h.mod.githubDrafts.size, 0);
+});
+
+test("late GitHub reply completion preserves later edits and ignores another checkout", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const thread = { id: "reply1", fingerprint: "v1", comments: [] };
+  h.mod.beginGithubReply(thread, h.cx); const draft = [...h.mod.githubDrafts.values()][0];
+  draft.editor.set_value("First reply");
+  h.state.reply = async request => {
+    draft.editor.set_value("Later edit"); h.state.scope = { repo: "/other", machine: null };
+    return { code: 0, stdout: JSON.stringify({ ok: true, data: { github: { threads: [thread] }, reply_id: request.reply_id, reply: { status: "confirmed" } } }) };
+  };
+  h.mod.postGithubReply(thread, h.cx); await h.drain();
+  assert.equal(draft.editor.value(), "Later edit"); assert.equal(h.mod.githubDrafts.size, 1);
+  assert.notEqual(draft.id, h.requests.at(-1).reply_id);
+  assert.equal(h.mod.notice, null);
+});
+
+test("missing GitHub CLI guidance does not disable local comment saving or sending", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.github = { error: "GitHub CLI (gh) was not found. Install it from https://cli.github.com, then run gh auth login. Local reviews still work.", threads: [] };
+  h.mod.view = "github"; h.mod.render(h.cx);
+  assert.ok(h.nodes.some(n => n.children.includes("GitHub unavailable · local reviews still work")));
+  assert.ok(h.nodes.filter(n => n.id === "send-review").at(-1).events.on_click);
+  assert.equal(h.mod.snapshotError, null);
+});
+
 test("resolve emits the documented request without an invalid revision field", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain();
   h.mod.act("resolve", { id: "note1", resolved: true }, h.cx); await h.drain();
@@ -538,6 +601,47 @@ test("syntax toggles persist and colored rows keep the deferred renderer handler
   next.state.props = { presentation: "full" };
   next.mod.init({}, next.cx); await next.drain();
   assert.equal(next.mod.syntax, false);
+});
+
+for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} shows a neutral empty state outside Git and recovers on Refresh`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.state.reply = async () => ({ code: 1, stdout: JSON.stringify({ ok: false,
+    error: "Git command failed (128): fatal: not a git repository (or any of the parent directories): .git" }) });
+  h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
+  assert.equal(h.mod.error, null);
+  assert.ok(h.nodes.some(n => n.id === "review-empty-checkout"));
+  assert.ok(!h.nodes.some(n => n.id === "review-error" || n.id === "send-review" || n.id === "full-send"));
+  assert.equal(h.requests.filter(r => r.op === "github").length, 0);
+  h.mod.saveComment(h.cx); h.mod.sendToSession(h.cx); await h.drain();
+  assert.equal(h.requests.length, 1);
+  h.state.reply = null;
+  h.nodes.find(n => n.id === "empty-refresh").events.on_click(null, h.cx); await h.drain();
+  assert.equal(h.mod.snapshotError, null); assert.ok(h.mod.data.snapshot);
+});
+
+test("no selected folder shows an empty state without calling Git", async () => {
+  const h = harness(); h.state.scope.repo = "";
+  h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
+  assert.equal(h.mod.error, null); assert.equal(h.requests.length, 0);
+  assert.ok(h.nodes.some(n => n.id === "review-empty-checkout"));
+});
+
+test("a checkout losing Git hides stale actions and preserves drafts through recovery", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const cached = h.mod.data;
+  h.mod.editor.set_value("keep original intent");
+  h.mod.draft.anchor({ side: "new", start: 2, end: 2 }, "r1");
+  h.mod.snapshotFailed("fatal: not a git repository (or any of the parent directories): .git", h.state.scope);
+  const start = h.nodes.length; h.mod.render(h.cx);
+  assert.ok(h.nodes.slice(start).some(n => n.id === "review-empty-checkout"));
+  assert.ok(!h.nodes.slice(start).some(n => n.id === "diff-0" || n.id === "save-note"));
+  const count = h.requests.length;
+  h.mod.act("resolve", { id: "note1", resolved: true }, h.cx);
+  h.mod.sendToSession(h.cx); await h.drain(); assert.equal(h.requests.length, count);
+  assert.equal(h.mod.data, cached); assert.equal(h.mod.editor.value(), "keep original intent");
+  h.state.revision = "r2"; h.mod.refresh(h.cx, true); await h.drain();
+  assert.equal(h.mod.editor.value(), "keep original intent");
+  assert.equal(h.mod.needsSelection, true); assert.equal(h.mod.snapshotError, null);
 });
 
 test("unreachable machines show a connection state, not an empty checkout", async () => {

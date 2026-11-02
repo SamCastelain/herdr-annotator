@@ -11,6 +11,7 @@ use std::{
 const TTL: u64 = 300;
 const THREADS: &str = r#"query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){state reviewThreads(first:20,after:$cursor){nodes{id path line startLine originalLine originalStartLine diffSide isResolved isOutdated comments(first:20){nodes{id body url updatedAt author{login} diffHunk}pageInfo{hasNextPage endCursor}}}pageInfo{hasNextPage endCursor}}}}}"#;
 const REPLIES: &str = r#"query($id:ID!,$cursor:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$cursor){nodes{id body url updatedAt author{login} diffHunk}pageInfo{hasNextPage endCursor}}}}}"#;
+const POST_REPLY: &str = r#"mutation($thread:ID!,$body:String!,$client:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread,body:$body,clientMutationId:$client}){comment{id url}}}"#;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PullRequest {
@@ -51,6 +52,15 @@ struct Receipt {
     delivery: Delivery,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct ReplyReceipt {
+    thread: String,
+    body_hash: String,
+    status: String,
+    url: Option<String>,
+    error: Option<String>,
+}
+
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct GithubView {
     pub pull_request: Option<PullRequest>,
@@ -81,6 +91,111 @@ struct Document {
     receipts: BTreeMap<String, Receipt>,
     #[serde(default)]
     read: BTreeMap<String, String>,
+    #[serde(default)]
+    replies: BTreeMap<String, ReplyReceipt>,
+}
+
+/// An explicit GitHub write, separate from delivering review instructions to hc.
+pub fn reply(
+    dir: &Path,
+    scope: &Scope,
+    thread: &ThreadRef,
+    body: &str,
+    reply_id: &str,
+    retry: bool,
+) -> Result<Value> {
+    let body = body.trim();
+    if body.is_empty() || body.len() > 16_384 {
+        return Err("Reply must contain 1–16384 bytes".into());
+    }
+    if reply_id.is_empty()
+        || reply_id.len() > 100
+        || !reply_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err("Invalid reply identifier".into());
+    }
+    let scope = git::canonical_scope(scope)?;
+    let branch = git::git(&scope, &["symbolic-ref", "--short", "-q", "HEAD"])?;
+    let branch = (branch.code == 0).then(|| branch.text.trim().to_owned());
+    let mut cache = Cache::open(dir, &scope, branch.as_deref())?;
+    let body_hash = hash(body.as_bytes());
+    if let Some(previous) = cache.doc.replies.get(reply_id) {
+        if previous.thread != thread.id || previous.body_hash != body_hash {
+            return Err(
+                "This reply identifier belongs to different text. Cancel and start a new reply."
+                    .into(),
+            );
+        }
+        if previous.status == "confirmed" || !retry {
+            return Ok(json!({"github":cache.view(),"reply_id":reply_id,"reply":previous}));
+        }
+    } else if let Some((id, previous)) =
+        cache.doc.replies.iter().find(|(_, r)| {
+            r.thread == thread.id && r.body_hash == body_hash && r.status == "uncertain"
+        })
+    {
+        return Ok(json!({"github":cache.view(),"reply_id":id,"reply":previous}));
+    }
+    cache.refresh(&scope, branch.as_deref(), true)?;
+    if let Some(error) = &cache.doc.error {
+        return Err(error.clone());
+    }
+    if cache.doc.pull_request.is_none() {
+        return Err("This branch has no open pull request".into());
+    }
+    let current = cache
+        .doc
+        .threads
+        .iter()
+        .find(|t| t.id == thread.id)
+        .ok_or("Thread no longer exists in this PR; refresh")?;
+    if current.fingerprint != thread.fingerprint {
+        return Err(
+            "Thread changed. Review the new replies, then click Reply again before posting.".into(),
+        );
+    }
+    if current.incomplete {
+        return Err("Load the complete thread before replying".into());
+    }
+    if cache.doc.replies.len() >= 1000 && !cache.doc.replies.contains_key(reply_id) {
+        return Err("Reply receipt limit reached; post on GitHub instead".into());
+    }
+    let mut receipt = ReplyReceipt {
+        thread: thread.id.clone(),
+        body_hash,
+        status: "uncertain".into(),
+        url: None,
+        error: None,
+    };
+    cache.doc.replies.insert(reply_id.into(), receipt.clone());
+    cache.save()?; // Durable uncertainty BEFORE the write. clientMutationId is not idempotency.
+    match graphql(
+        POST_REPLY,
+        &[
+            ("thread", thread.id.clone()),
+            ("body", body.into()),
+            ("client", reply_id.into()),
+        ],
+    ) {
+        Ok(data) => {
+            let comment = &data["data"]["addPullRequestReviewThreadReply"]["comment"];
+            if comment["id"].as_str().is_some_and(|s| !s.is_empty()) {
+                receipt.status = "confirmed".into();
+                receipt.url = comment["url"].as_str().map(str::to_owned);
+            } else {
+                receipt.error = Some("GitHub returned no reply confirmation".into());
+            }
+        }
+        Err(error) => receipt.error = Some(error),
+    }
+    cache.doc.replies.insert(reply_id.into(), receipt.clone());
+    cache.save()?;
+    if receipt.status == "confirmed" {
+        cache.refresh(&scope, branch.as_deref(), true)?;
+    }
+    Ok(json!({"github":cache.view(),"reply_id":reply_id,"reply":receipt}))
 }
 
 pub(crate) struct Cache {
@@ -337,8 +452,16 @@ fn gh(args: &[String]) -> Result<Value> {
         .env("GH_PAGER", "cat")
         .args(args);
     let out = crate::process::run(&mut command, crate::process::MAX_OUTPUT)
-        .map_err(|e| format!("GitHub request failed: {e}"))?;
+        .map_err(|e| if e.starts_with("Cannot start command (not found)") {
+            "GitHub CLI (gh) was not found. Install it from https://cli.github.com, then run gh auth login on this computer and Refresh. Local reviews still work.".into()
+        } else { format!("GitHub request failed: {e}") })?;
     if out.code != 0 {
+        if out.stderr.contains("gh auth login")
+            || out.stderr.contains("GH_TOKEN")
+            || out.stderr.contains("not logged into")
+        {
+            return Err("Sign in to GitHub: run gh auth login on this computer, then Refresh. Local reviews still work.".into());
+        }
         return Err(format!(
             "{}. Check gh auth status and repository access.",
             out.failure("GitHub request")

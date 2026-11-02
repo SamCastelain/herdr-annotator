@@ -204,14 +204,18 @@ export function snapshotFailure(error, machine) {
     } catch { /* A plain Git diagnostic need not contain JSON. */ }
   }
   const offline = kind === "unavailable" || /unreachable|cannot reach|connection (?:refused|timed out)|operation timed out|no route to host|network is unreachable|could not resolve hostname|machine.*unavailable/i.test(detail);
-  return offline ? { kind: "offline", title: machine ? `${machine} is unavailable` : "Connection unavailable",
-    message: "Reconnect the machine, then Refresh to retry.", detail }
-    : { kind: "error", title: "Unable to load changes", message: detail, detail: null };
+  if (offline) return { kind: "offline", title: machine ? `${machine} is unavailable` : "Connection unavailable",
+    message: "Reconnect the machine, then Refresh to retry.", detail };
+  if (/\bfatal:\s*not a git repository(?:\s*\(|\s*:|\s*$)/i.test(detail)) {
+    return { kind: "not-repository", title: "Not a Git checkout",
+      message: "Open a folder with a Git repository to review its changes.", detail: null };
+  }
+  return { kind: "error", title: "Unable to load changes", message: detail, detail: null };
 }
 
 export function needsFreshSnapshot(id) {
   return /^(?:save-note|full-save|send-review|full-send|export-review|full-export)$/.test(id)
-    || /^(?:resolve-|read-|requeue-|confirm-requeue-|fix-)/.test(id);
+    || /^(?:resolve-|read-|requeue-|confirm-requeue-|fix-|reply-thread-|post-reply-|retry-reply-)/.test(id);
 }
 
 export function savedBaseChoice(value) {

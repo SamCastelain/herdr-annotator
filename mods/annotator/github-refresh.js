@@ -17,6 +17,19 @@ export class GithubRefresh {
     this.carryForce = false;
   }
 
+  replace(value, context) {
+    this.generation++; this.pending = null;
+    this.value = value; this.context = context;
+    this.reconcile();
+  }
+
+  reconcile() {
+    for (const [id, ref] of this.queue) {
+      if (!this.value?.threads?.some(t => t.id === id && t.fingerprint === ref.fingerprint
+        && !t.resolved && !t.delivery && !t.incomplete)) this.queue.delete(id);
+    }
+  }
+
   async drain(request, isCurrent, changed) {
     if (this.busy) return;
     this.busy = true;
@@ -30,10 +43,7 @@ export class GithubRefresh {
           const data = await request({ op: "github", scope: work.scope, force: work.force });
           if (!current()) continue;
           this.value = data.github; this.context = work.context;
-          for (const [id, ref] of this.queue) {
-            if (!this.value?.threads?.some(t => t.id === id && t.fingerprint === ref.fingerprint
-              && !t.resolved && !t.delivery && !t.incomplete)) this.queue.delete(id);
-          }
+          this.reconcile();
         } catch (e) {
           if (current()) this.value = { ...this.value, error: String(e) };
         } finally { this.active = null; }

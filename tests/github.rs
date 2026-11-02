@@ -68,9 +68,17 @@ with open(os.environ['FAKE_LOG'],'a') as f:f.write(json.dumps(a)+'\n')
 d=json.load(open(os.environ['FAKE_DATA']))
 if a[0]=='api':
     assert a[1:3]==['--hostname','github.com']
-    if d.get('fail'):sys.exit(1)
+    if d.get('fail'):
+        print(d.get('fail_message','request failed'),file=sys.stderr);sys.exit(1)
     if 'graphql' not in a: print(json.dumps(d['prs']));sys.exit(0)
     fields={s.split('=',1)[0]:s.split('=',1)[1] for s in a if '=' in s}
+    if 'addPullRequestReviewThreadReply' in fields['query']:
+        if d.get('reply_fail'):sys.exit(2)
+        c={'id':'posted1','body':fields['body'],'url':'https://github.com/owner/repo/pull/1#discussion_posted1','updatedAt':'new','author':{'login':'me'},'diffHunk':''}
+        d['pages']['first']['nodes'][0]['comments']['nodes'].append(c)
+        with open(os.environ['FAKE_DATA'],'w') as f:json.dump(d,f)
+        if d.get('reply_lost'):sys.exit(2)
+        print(json.dumps({'data':{'addPullRequestReviewThreadReply':{'comment':c}}}));sys.exit(0)
     if 'reviewThreads' in fields['query']:
         result=d['pages'].get(fields.get('cursor','first'))
         print(json.dumps({'data':{'repository':{'pullRequest':{'state':d.get('pr_state','OPEN'),'reviewThreads':result}}}}));sys.exit(0)
@@ -132,6 +140,139 @@ sys.exit(2)
         assert_eq!(s["ok"], true, "{s}");
         s["data"]["snapshot"]["revision"].clone()
     }
+}
+
+#[test]
+fn missing_gh_preserves_cached_threads_and_does_not_break_local_reviews() {
+    let f = Fixture::new();
+    f.refs();
+    fs::rename(&f.program, f.program.with_extension("disabled")).unwrap();
+    let result = f.request(json!({"op":"github","force":true}));
+    assert_eq!(result["ok"], true);
+    assert_eq!(
+        result["data"]["github"]["threads"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let error = result["data"]["github"]["error"].as_str().unwrap();
+    assert!(error.contains("GitHub CLI (gh) was not found"), "{error}");
+    assert!(error.contains("cli.github.com") && error.contains("gh auth login"));
+    assert_eq!(f.request(json!({"op":"snapshot"}))["ok"], true);
+}
+
+#[test]
+fn gh_sign_in_failure_has_actionable_guidance() {
+    let f = Fixture::new();
+    f.update(|d| {
+        d["fail"] = json!(true);
+        d["fail_message"] = json!("To get started with GitHub CLI, please run: gh auth login");
+    });
+    let result = f.request(json!({"op":"github","force":true}));
+    assert!(
+        result["data"]["github"]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Sign in to GitHub")
+    );
+}
+
+#[test]
+fn explicit_reply_posts_once_and_never_sends_to_the_agent() {
+    let f = Fixture::new();
+    let refs = f.refs();
+    let request = json!({"op":"github_reply","thread":refs[0],"body":"Fixed in the latest commit.","reply_id":"reply-test-1"});
+    let result = f.request(request.clone());
+    assert_eq!(result["reply"], Value::Null); // Reply lives in the existing success envelope.
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["data"]["reply"]["status"], "confirmed");
+    assert_eq!(
+        result["data"]["github"]["threads"][0]["comments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let duplicate = f.request(request);
+    assert_eq!(duplicate["data"]["reply"]["status"], "confirmed");
+    let writes = f
+        .calls("api")
+        .into_iter()
+        .filter(|c| c.to_string().contains("addPullRequestReviewThreadReply"))
+        .count();
+    assert_eq!(writes, 1);
+    assert!(f.calls("send").is_empty());
+}
+
+#[test]
+fn stale_reply_is_refused_and_uncertain_reply_requires_explicit_retry() {
+    let f = Fixture::new();
+    let old = f.refs();
+    f.update(|d| {
+        d["pages"]["first"]["nodes"][0]["comments"]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(comment("new", "A new concern"))
+    });
+    let stale =
+        f.request(json!({"op":"github_reply","thread":old[0],"body":"Thanks","reply_id":"stale"}));
+    assert_eq!(stale["ok"], false);
+    assert!(stale["error"].as_str().unwrap().contains("Thread changed"));
+    let refs = f.refs();
+    f.update(|d| d["reply_fail"] = json!(true));
+    let request =
+        json!({"op":"github_reply","thread":refs[0],"body":"Thanks","reply_id":"uncertain"});
+    assert_eq!(
+        f.request(request.clone())["data"]["reply"]["status"],
+        "uncertain"
+    );
+    assert_eq!(
+        f.request(request.clone())["data"]["reply"]["status"],
+        "uncertain"
+    );
+    // A new UI process/identifier must not silently bypass persisted uncertainty.
+    let same_body =
+        f.request(json!({"op":"github_reply","thread":refs[0],"body":"Thanks","reply_id":"other"}));
+    assert_eq!(same_body["data"]["reply_id"], "uncertain");
+    assert_eq!(
+        f.calls("api")
+            .iter()
+            .filter(|c| c.to_string().contains("addPullRequestReviewThreadReply"))
+            .count(),
+        1
+    );
+    f.update(|d| d["reply_fail"] = json!(false));
+    let mut retry = request;
+    retry["retry"] = json!(true);
+    assert_eq!(f.request(retry)["data"]["reply"]["status"], "confirmed");
+}
+
+#[test]
+fn lost_reply_confirmation_is_not_automatically_reposted() {
+    let f = Fixture::new();
+    let refs = f.refs();
+    f.update(|d| d["reply_lost"] = json!(true));
+    let request = json!({"op":"github_reply","thread":refs[0],"body":"Already posted remotely","reply_id":"lost"});
+    assert_eq!(
+        f.request(request.clone())["data"]["reply"]["status"],
+        "uncertain"
+    );
+    assert_eq!(f.request(request)["data"]["reply"]["status"], "uncertain");
+    assert_eq!(
+        f.calls("api")
+            .iter()
+            .filter(|c| c.to_string().contains("addPullRequestReviewThreadReply"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        f.request(json!({"op":"github","force":true}))["data"]["github"]["threads"][0]["comments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[test]

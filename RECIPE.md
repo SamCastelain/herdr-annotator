@@ -1,8 +1,10 @@
 # Herdr Annotator
 
-A native Herdr App review panel: select changed files, click source lines or
-Shift-click ranges, write persistent notes, then explicitly export or submit
-feedback to an idle agent through herdr-core.
+Review your agent's code without leaving Herdr. Compare branch or uncommitted
+changes in a native sidebar or full review tab, leave comments on files or lines,
+and send your review to the agent working in that checkout. Read GitHub PR review
+threads, reply directly, or queue them for the agent to address. Works with local
+and SSH worktrees.
 
 ![Herdr Annotator](preview.png)
 
@@ -36,6 +38,9 @@ outdated comments block it. No terminal UI or popup picker.
 ## How it behaves
 
 Default to the active space's terminal checkout, with optional pinned scope props.
+Folders outside Git show a neutral Not a Git checkout state with Refresh, not a
+red error. No selected folder asks for a checkout. Preserve drafts and block stale
+review actions; connection, permission and corrupt-repository failures stay errors.
 File notes use no range. Clicking old-only deletions selects old lines; other
 source rows select new lines. Shift-click extends on the same side. Saved notes
 support resolve/reopen; unsaved drafts stay in memory per context. Refresh every
@@ -46,7 +51,11 @@ Unchanged lines accept annotations; collapsing the preview preserves their ancho
 
 GitHub threads poll every five minutes; Refresh fetches immediately. Show replies,
 outdated/resolved states, new replies and delivery receipts. Fix thread sends only
-that thread; Add to review queues it with local notes. GitHub remains read-only.
+that thread; Add to review queues it with local notes. Reply opens a separate
+composer; only Post to GitHub writes a reply, using the signed-in gh account.
+Keep reply drafts per context/thread. Persist uncertainty before posting; never
+retry automatically. Explicit retry requires the person to check GitHub first.
+Missing gh or sign-in shows installation/auth guidance, without blocking local reviews.
 Read/unread markers persist locally. Unread-only filters comment lists; new GitHub
 replies become unread. Reading changes neither resolution nor delivery eligibility.
 Hide resolved local notes and GitHub threads by default, including inline notes
@@ -112,4 +121,5 @@ only to unique exact context, and become outdated for modified/ambiguous anchors
 Fake-core tests cover remote reads, confirmed delivery, failure uncertainty,
 duplicate prevention and busy/blocked refusal. Git index bytes stay unchanged.
 Large-list tests load a file past index 100; context notes survive collapsing.
-Fake-GitHub tests cover paging, caching, reply changes and read-only delivery.
+Fake-GitHub tests cover paging, caching, reply changes, explicit posting, missing
+gh, and duplicate prevention after a lost confirmation. Tests never post to real PRs.
