@@ -56,7 +56,6 @@ cargo test --locked
 npm test # Node.js 22+
 ```
 
-See the [user guide](docs/guide.md), [JSON interface](docs/interface.md), and
-[mod recipe](RECIPE.md) for details.
+See the [user guide](docs/guide.md) and [mod recipe](RECIPE.md) for details.
 
 [MIT license](LICENSE).

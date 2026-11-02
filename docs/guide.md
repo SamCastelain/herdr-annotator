@@ -259,8 +259,8 @@ herdr-annotator request '{"op":"snapshot","scope":{"repo":"/path/to/checkout","m
 
 Or pipe the same JSON to `herdr-annotator request`. Replies are
 `{"ok":true,"data":...}` or `{"ok":false,"error":"..."}` with nonzero exit.
-Operations: `snapshot`, `add`, `resolve`, `read`, `export`, `send`, `github`, `github_read`; see
-[`interface.md`](interface.md). The engine's public Rust interface is
+Operations: `snapshot`, `add`, `resolve`, `read`, `export`, `send`, `github`, `github_read`.
+The engine's public Rust interface is
 `Engine::handle(Request)`, also used by integration tests.
 
 ## Development
