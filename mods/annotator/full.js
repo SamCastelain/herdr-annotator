@@ -1,7 +1,7 @@
 import { div, list } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, v_virtual_list, Scrollbar, Textarea } from "gpui-base";
 import { theme, settings, setShared } from "herdr";
-import { splitRows, splitSelectionRow, selected, pendingComments, unreadItems, fileStats, diffEntries, commentStatus, commentLocation } from "./review.js";
+import { splitRows, splitSelectionRow, selected, pendingComments, unreadItems, visibleComments, fileStats, diffEntries, commentStatus, commentLocation } from "./review.js";
 
 function pageCards(self, id, items, render) {
   self.cardPages ??= new Map();
@@ -56,10 +56,11 @@ function inlineNote(comment, active, t) {
 
 export function renderFull(self, cx) {
   const t = theme(), font = settings().font ?? "JetBrains Mono";
-  const data = self.data, snapshot = data?.snapshot, files = snapshot?.files ?? [], comments = data?.comments ?? [];
+  const data = self.data, snapshot = data?.snapshot, files = snapshot?.files ?? [], allComments = data?.comments ?? [];
+  const comments = visibleComments(allComments, self.showResolved);
   const file = files.find(f => f.path === self.open), fileIndex = files.indexOf(file);
   const fileComments = comments.filter(c => c.path === self.open);
-  const threads = self.github?.threads ?? [];
+  const threads = visibleComments(self.github?.threads ?? [], self.showResolved);
   const counts = new Map(), marks = new Map();
   for (const c of comments) counts.set(c.path, (counts.get(c.path) ?? 0) + 1);
   for (const c of fileComments) if (!c.stale && c.position) {
@@ -74,7 +75,7 @@ export function renderFull(self, cx) {
   const highlights = self.syntaxCache?.key === JSON.stringify([snapshot?.revision, file?.path]) ? self.syntaxCache.tokens : null;
   const stats = file ? fileStats(file) : null;
   const hasDraft = Boolean(self.editor.value().trim()), selection = self.selection;
-  const pending = pendingComments(comments), batch = pending.length + self.threadQueue.size;
+  const pending = pendingComments(allComments), batch = pending.length + self.threadQueue.size;
   const target = self.currentSession(), unread = comments.filter(c => !c.read).length + threads.filter(c => !c.read).length;
   const listId = `full-diff-${file?.path ?? "empty"}-${self.diffStyle}`;
   const diff = v_flex().id("full-diff-frame").relative().flex_1().min_h(0)
@@ -194,7 +195,8 @@ export function renderFull(self, cx) {
     .when(Boolean(self.notice && !self.error), el => el.child(div().px(16).py(8).text_size(12).text_color(t.muted).child(self.notice)))
     .child(h_flex().h(36).px(12).gap(8).items_center().flex_none().border_b(1).border_color(t.border)
       .child(self.button("full-toggle-files", self.filesOpen ? "Hide files" : "Show files", cx => { self.filesOpen = !self.filesOpen; self.rememberFull({ filesOpen: self.filesOpen }); cx.notify(); }))
-      .child(self.button("full-unread", self.onlyUnread ? "● Unread only" : `All comments · ${unread} unread`, cx => { self.onlyUnread = !self.onlyUnread; self.rememberFull({ onlyUnread: self.onlyUnread }); cx.notify(); }, true, "secondary"))
+       .child(self.button("full-unread", self.onlyUnread ? "● Unread only" : `All comments · ${unread} unread`, cx => { self.onlyUnread = !self.onlyUnread; self.rememberFull({ onlyUnread: self.onlyUnread }); cx.notify(); }, true, "secondary"))
+       .when(self.resolvedCount() > 0 || self.showResolved, el => el.child(self.resolvedFilter("full-resolved")))
       .child(div().flex_1())
       .child(self.button("full-toggle-comments", self.commentsOpen ? "Hide comments pane" : "Comments pane", cx => {
         self.commentsOpen = !self.commentsOpen; self.rememberFull({ commentsOpen: self.commentsOpen }); setShared("annotator.fullComments", self.commentsOpen); cx.notify();

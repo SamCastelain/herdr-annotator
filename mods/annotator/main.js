@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_resizable, resizable_panel, v_virtual_list, Scrollbar, TextareaState, Textarea } from "gpui-base";
 import { spaces, panes, focused, agents, exec, home, props, theme, settings, shared, setShared, run, layout, appHome, watchFolder, machines } from "herdr";
-import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, unreadItems, layoutSidebar, reviewSidebarTransition, fullPreferences, snapshotFailure, needsFreshSnapshot, savedBaseChoice } from "./review.js";
+import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, unreadItems, visibleComments, layoutSidebar, reviewSidebarTransition, fullPreferences, snapshotFailure, needsFreshSnapshot, savedBaseChoice } from "./review.js";
 import { renderFull } from "./full.js";
 import { highlightDiff } from "./syntax.js";
 import { DraftLifecycle } from "./draft.js";
@@ -81,6 +81,20 @@ export default class Annotator extends View {
   get githubBusy() { return this.githubRefresh.busy; }
   get githubContext() { return this.githubRefresh.context; }
   get threadQueue() { return this.githubRefresh.queue; }
+
+  get showResolved() { return shared("annotator.showResolved") === true; }
+
+  resolvedCount() {
+    return (this.data?.comments ?? []).filter(c => c.resolved).length
+      + (this.github?.threads ?? []).filter(c => c.resolved).length;
+  }
+
+  resolvedFilter(id) {
+    return this.button(id, `${this.showResolved ? "Hide" : "Show"} resolved · ${this.resolvedCount()}`, cx => {
+      setShared("annotator.showResolved", !this.showResolved);
+      this.activeComment = null; cx.notify();
+    }, true, this.showResolved ? "secondary" : "quiet");
+  }
 
   fileNote(cx) {
     this.draft.anchor(null, this.data?.snapshot.revision);
@@ -507,14 +521,17 @@ export default class Annotator extends View {
     if (this.full) return renderFull(this, cx);
     const data = current ? this.data : null;
     const files = data?.snapshot.files ?? [];
-    const comments = data?.comments ?? [];
+    const allComments = data?.comments ?? [];
+    const comments = visibleComments(allComments, this.showResolved);
+    const threads = visibleComments(this.github?.threads ?? [], this.showResolved);
+    const listedComments = unreadItems(comments, this.onlyUnread);
     const commentCounts = new Map();
     for (const comment of comments) commentCounts.set(comment.path, (commentCounts.get(comment.path) ?? 0) + 1);
     const file = files.find(f => f.path === this.open);
     const fileComments = file ? comments.filter(c => c.path === this.open) : [];
     const other = fileComments.filter(c => c.stale || !c.position);
     const missing = comments.filter(c => !files.some(f => f.path === c.path));
-    const pending = pendingComments(comments);
+    const pending = pendingComments(allComments);
     const target = this.currentSession();
     const selection = this.selection;
     const canSave = Boolean(file && this.editor.value().trim() && !this.needsSelection);
@@ -539,9 +556,10 @@ export default class Annotator extends View {
       .child(h_flex().h(33).flex_none().px(6).gap(4).bg(t.chrome).border_b(1).border_color(t.border)
         .child(this.button("view-diff", "Code", cx => { this.view = "diff"; cx.notify(); }, true, this.view === "diff" ? "secondary" : "quiet"))
          .child(this.button("view-comments", `Comments · ${summary.total}`, cx => { this.view = "comments"; cx.notify(); }, true, this.view === "comments" ? "secondary" : "quiet"))
-         .child(this.button("view-github", `GitHub · ${this.github?.threads?.length ?? 0}`, cx => { this.view = "github"; this.refreshGithub(cx); cx.notify(); }, true, this.view === "github" ? "secondary" : "quiet"))
+          .child(this.button("view-github", `GitHub · ${threads.length}`, cx => { this.view = "github"; this.refreshGithub(cx); cx.notify(); }, true, this.view === "github" ? "secondary" : "quiet"))
          .when(summary.outdated > 0, el => el.child(this.badge(`${summary.outdated} outdated`, t.ansi3, t.ansi3 + "18"))))
-      .child(h_flex().id("files-scope-row").h(31).flex_none().px(5).gap(3).items_center().bg(t.chrome)
+       .when(this.resolvedCount() > 0 || this.showResolved, el => el.child(h_flex().px(6).flex_none().bg(t.chrome).child(this.resolvedFilter("filter-resolved"))))
+       .child(h_flex().id("files-scope-row").h(31).flex_none().px(5).gap(3).items_center().bg(t.chrome)
         .when(this.view === "diff", el => el.child(this.button("toggle-files", `${this.filesOpen ? "▾" : "▸"} Files · ${data ? files.length : "—"}`, cx => { this.filesOpen = !this.filesOpen; cx.notify(); })))
         .when(this.view !== "diff", el => el.child(this.button("filter-unread", this.onlyUnread ? "● Unread only" : "All comments", cx => { this.onlyUnread = !this.onlyUnread; cx.notify(); })))
         .child(div().flex_1().min_w(0))
@@ -584,15 +602,15 @@ export default class Annotator extends View {
           ...missing.map(c => this.commentCard(c, t, true)),
         ])))
       .when(this.view === "comments", el => el.child(v_flex().id("review-comments").flex_1().min_h(0).overflow_y_scrollbar().py(4)
-        .children(unreadItems(comments, this.onlyUnread).map(c => this.commentCard(c, t, true)))
-        .when(!comments.length, el => el.child(v_flex().p(18).gap(8)
-          .child(div().font_semibold().child("Your review starts with a comment"))
-          .child(div().text_size(12).text_color(t.muted).child("Choose a file in Code, select a line, and write what should change. Save several comments, then send them together."))))))
+        .children(listedComments.map(c => this.commentCard(c, t, true)))
+        .when(!listedComments.length, el => el.child(v_flex().p(18).gap(8)
+          .child(div().font_semibold().child(allComments.length ? "No comments match these filters" : "Your review starts with a comment"))
+          .child(div().text_size(12).text_color(t.muted).child(allComments.length ? "Show resolved or turn off Unread only to see saved notes." : "Choose a file in Code, select a line, and write what should change. Save several comments, then send them together."))))))
       .when(this.view === "github", el => el.child(v_flex().id("review-github").flex_1().min_h(0).overflow_y_scrollbar()
         .child(div().p(10).text_size(11).text_color(t.muted).child(this.githubBusy ? "Checking GitHub…" : this.github?.pull_request ? `${this.github.pull_request.url} · polls every 5 minutes · read-only` : "No open PR found for this branch. Refresh checks GitHub now."))
         .when(Boolean(this.github?.error), el => el.child(div().p(10).text_color(t.ansi3).child(this.github.error)))
         .when(Boolean(this.github?.limited), el => el.child(div().p(10).text_color(t.ansi3).child("GitHub thread limit reached; more threads exist on the PR.")))
-        .children(unreadItems(this.github?.threads ?? [], this.onlyUnread).map(thread => this.githubCard(thread, t)))))))
+        .children(unreadItems(threads, this.onlyUnread).map(thread => this.githubCard(thread, t)))))))
         .child(resizable_panel().size(this.sizes[2]).size_range(110).child(v_flex().size_full().min_h(0).overflow_y_scrollbar().child(v_flex().mx(8).mt(6).mb(8).p(9).gap(6).rounded(8).bg(t.surface).border_1().border_color(selection ? t.accent : t.border)
         .child(h_flex().items_center().gap(5)
           .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(11.5).text_color(selection ? t.accent : t.foreground)
@@ -619,6 +637,6 @@ export default class Annotator extends View {
           .when(Boolean(target), el => el.child(this.badge(target.status === "idle" ? "Ready" : target.status === "blocked" ? "Needs you" : "Working", target.status === "idle" ? t.ansi2 : t.ansi3)))
           .child(this.button("export-review", "Export…", cx => this.act("export", { threads: [...this.threadQueue.values()] }, cx), batchSize > 0)))
         .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && target?.status === "idle" && !hasDraft, "primary").w_full().h(33))
-        .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : this.threadQueue.size && !hasDraft && target?.status === "idle" ? "One click submits comments and selected GitHub threads to this session." : sendHint(comments, target, hasDraft))));
+        .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : this.threadQueue.size && !hasDraft && target?.status === "idle" ? "One click submits comments and selected GitHub threads to this session." : sendHint(allComments, target, hasDraft))));
   }
 }

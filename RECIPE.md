@@ -49,6 +49,9 @@ outdated/resolved states, new replies and delivery receipts. Fix thread sends on
 that thread; Add to review queues it with local notes. GitHub remains read-only.
 Read/unread markers persist locally. Unread-only filters comment lists; new GitHub
 replies become unread. Reading changes neither resolution nor delivery eligibility.
+Hide resolved local notes and GitHub threads by default, including inline notes
+and file badges. Show resolved / Hide resolved reveals or hides saved history;
+remember this choice across the sidebar and full review. Local notes can reopen.
 Full tabs pin the source checkout/comparison/chat. Losing that chat disables Send.
 Opening full review hides the existing Changes sidebar; returning to the source
 tab restores it. Respect manual sidebar toggles and do not replace a Files panel.

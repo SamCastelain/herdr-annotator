@@ -1,6 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint } from "../mods/annotator/review.js";
+import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, visibleComments, unreadItems } from "../mods/annotator/review.js";
+
+test("resolved visibility composes with unread filtering without changing saved notes or eligibility", () => {
+  const items = [
+    { id: "open", resolved: false, read: false },
+    { id: "closed", resolved: true, read: false },
+    { id: "read", resolved: false, read: true },
+    { id: "legacy" },
+  ];
+  assert.deepEqual(visibleComments(items).map(c => c.id), ["open", "read", "legacy"]);
+  assert.deepEqual(unreadItems(visibleComments(items), true).map(c => c.id), ["open", "legacy"]);
+  assert.equal(visibleComments(items, true), items);
+  assert.equal(items.length, 4);
+  assert.equal(pendingComments(items).some(c => c.id === "closed"), false);
+});
 
 test("line selection supports either side and Shift-click ranges", () => {
   const first = selectionFor(null, { old: 2, new: 3 });

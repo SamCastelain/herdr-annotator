@@ -96,6 +96,47 @@ test("one click sends saved comments; rendering alone never sends", async () => 
   assert.ok(!h.nodes.some(n => n.id === "cancel-send"));
 });
 
+for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} hides resolved local notes and GitHub threads; toggle keeps history recoverable`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.data.comments.push({ ...h.mod.data.comments[0], id: "closed", resolved: true });
+  h.mod.data.comments.push({ ...h.mod.data.comments[0], id: "missing", path: "gone.rs", resolved: true, stale: true, position: null });
+  h.mod.github = { threads: [{ id: "thread-closed", resolved: true, comments: [], read: false }] };
+  const before = h.requests.length;
+  const render = () => { const start = h.nodes.length; h.mod.render(h.cx); return h.nodes.slice(start); };
+  let nodes = render();
+  assert.ok(!nodes.some(n => n.id === "note-closed" || n.id === "note-missing"));
+  if (full) assert.equal(h.state.diffList.count, 2, "resolved inline note and marker are omitted");
+  const toggle = full ? "full-resolved" : "filter-resolved";
+  nodes.find(n => n.id === toggle).events.on_click(null, h.cx);
+  assert.equal(h.state.shared["annotator.showResolved"], true);
+  h.mod.view = "comments"; nodes = render();
+  assert.ok(nodes.some(n => n.id === "note-closed"));
+  assert.ok(nodes.some(n => n.id === "note-missing"));
+  assert.ok(nodes.some(n => n.id === "resolve-closed"), "hidden history can still be reopened");
+  h.mod.view = "github"; nodes = render();
+  assert.ok(nodes.some(n => n.id === "thread-thread-closed"));
+  nodes.find(n => n.id === toggle).events.on_click(null, h.cx);
+  nodes = render();
+  assert.ok(!nodes.some(n => n.id === "thread-thread-closed"));
+  assert.equal(h.requests.length, before, "visibility never sends or mutates saved notes");
+  assert.equal(h.mod.data.comments.length, 3);
+  assert.equal(review.pendingComments(h.mod.data.comments).length, 1);
+});
+
+test("resolved visibility is restored from shared settings and composes with Unread only", async () => {
+  const h = harness(); h.state.shared["annotator.showResolved"] = true;
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.data.comments[0].resolved = true; h.mod.data.comments[0].read = true;
+  h.mod.view = "comments"; h.mod.onlyUnread = true;
+  h.mod.render(h.cx);
+  assert.equal(h.mod.showResolved, true);
+  assert.ok(!h.nodes.some(n => n.id === "note-note1"));
+  assert.ok(h.nodes.some(n => n.children.includes("No comments match these filters")));
+  h.mod.onlyUnread = false; h.mod.render(h.cx);
+  assert.ok(h.nodes.some(n => n.id === "note-note1"));
+});
+
 test("resolve emits the documented request without an invalid revision field", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain();
   h.mod.act("resolve", { id: "note1", resolved: true }, h.cx); await h.drain();

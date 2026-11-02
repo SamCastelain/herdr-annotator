@@ -184,6 +184,12 @@ bounded; full review colors only the visible rows.
 
 ### Read and unread
 
+Resolved local comments and GitHub threads are hidden by default, including
+inline notes and file badges. **Show resolved** reveals them; **Hide resolved**
+hides them again. This choice is shared by the sidebar and full review and
+survives restarts. Notes remain saved, and local notes can still be reopened.
+The visibility filter never changes Send eligibility.
+
 Local comments and GitHub threads have **Mark read / Mark unread** controls.
 **All comments / Unread only** filters the comment lists. These markers persist
 on the app machine and are shared by the sidebar and full tab after refresh.

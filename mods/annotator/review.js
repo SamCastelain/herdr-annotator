@@ -115,6 +115,11 @@ export function unreadItems(items, onlyUnread) {
   return onlyUnread ? items.filter(item => !item.read) : items;
 }
 
+// Presentation only: saved state and delivery eligibility use the full review.
+export function visibleComments(items, showResolved = false) {
+  return showResolved ? items : items.filter(item => !item.resolved);
+}
+
 export function diffEntries(rows, comments, split) {
   const byLine = new Map(), placed = new Set(), entries = [];
   const note = comment => { placed.add(comment.id); entries.push({ key: `note-${comment.id}`, comment }); };
