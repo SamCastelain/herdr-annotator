@@ -1,0 +1,71 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint } from "../mods/annotator/review.js";
+
+test("line selection supports either side and Shift-click ranges", () => {
+  const first = selectionFor(null, { old: 2, new: 3 });
+  assert.deepEqual(selectionPayload(first), { side: "new", start: 3, end: 3 });
+  const extended = selectionFor(first, { new: 7 }, true);
+  assert.deepEqual(selectionPayload(extended), { side: "new", start: 3, end: 7 });
+  assert.equal(selected({ new: 4 }, extended), true);
+  assert.equal(selected({ old: 4 }, extended), false);
+  assert.deepEqual(selectionPayload(selectionFor(extended, { old: 5 }, true)), { side: "old", start: 5, end: 5 });
+  assert.equal(selectionFor(first, { kind: "hunk" }), first);
+});
+
+test("session routing follows the focused chat and survives composer focus", () => {
+  const list = [
+    { address: "t7", pane: "p7", space: "s", tab: "a", status: "idle" },
+    { address: "t8", pane: "p8", space: "s", tab: "a", status: "working" },
+    { address: "t9", pane: "p9", space: "s", tab: "b", status: "idle" },
+  ];
+  const ctx = { scope: { machine: null }, space: "s", tab: "a" };
+  assert.equal(sessionTarget(list, ctx, { terminal: "t7" }).address, "t7");
+  assert.equal(sessionTarget(list, ctx, {}, "t8").address, "t8");
+  assert.equal(sessionTarget(list, ctx, {}), null); // No guessing between two chats.
+  assert.equal(sessionTarget(list, ctx, { terminal: "t9" }), null); // No cross-tab send.
+  assert.equal(sessionTarget(list, { ...ctx, tab: "b" }, {}).address, "t9");
+});
+
+test("same-numbered local and remote terminals are never interchangeable", () => {
+  const list = [
+    { address: "t7", space: "s", tab: "a" },
+    { address: "server/t7", space: "s", tab: "a" },
+  ];
+  const ctx = { scope: { machine: "server" }, space: "s", tab: "a" };
+  assert.equal(sessionTarget(list, ctx, { terminal: "t7" }).address, "server/t7");
+  assert.equal(sessionTarget(list, { ...ctx, tab: "missing" }, {}), null);
+});
+
+test("comments attach to the correct diff side and only current notes export", () => {
+  const note = { position: { side: "old", end: 3 }, stale: false, resolved: false, delivery: null };
+  assert.equal(inlineAt(note, { old: 3, new: null }), true);
+  assert.equal(inlineAt(note, { new: 3 }), false);
+  assert.equal(inlineAt({ ...note, stale: true }, { old: 3 }), false);
+  assert.equal(pendingComments([note, { ...note, resolved: true }, { ...note, delivery: "uncertain" }, { ...note, stale: true }]).length, 1);
+});
+
+test("presentation separates ready, outdated, sent and resolved comments", () => {
+  const ready = { resolved: false, stale: false, delivery: null };
+  const outdated = { ...ready, stale: true };
+  const sent = { ...ready, delivery: "sent" };
+  const resolved = { ...outdated, resolved: true };
+  assert.deepEqual(reviewSummary([ready, outdated, sent, resolved]), { total: 4, ready: 1, outdated: 1, sent: 1 });
+  assert.equal(commentStatus(ready).label, "Ready to send");
+  assert.equal(commentStatus(outdated).label, "Outdated");
+  assert.equal(commentStatus(sent).label, "Sent");
+  assert.equal(commentStatus(resolved).label, "Resolved");
+  assert.equal(commentStatus({ ...ready, delivery: "uncertain" }).label, "Check delivery");
+  assert.match(sendHint([outdated], { status: "idle" }, false), /outdated.*excluded/);
+  assert.match(sendHint([ready], { status: "working" }, false), /current turn finishes/);
+  assert.match(sendHint([ready], { status: "blocked" }, false), /Answer its prompt/);
+  assert.match(sendHint([ready], { status: "idle" }, true), /Save your draft/);
+});
+
+test("file statistics and comment locations make anchors legible", () => {
+  assert.deepEqual(pathParts("src/jobs/test.rs"), { name: "test.rs", folder: "src/jobs" });
+  assert.deepEqual(fileStats({ rows: [{ kind: "add" }, { kind: "delete" }, { kind: "context" }] }), { added: 1, removed: 1 });
+  assert.equal(commentLocation({ position: { side: "new", start: 2, end: 4 } }), "L2–4");
+  assert.equal(commentLocation({ stale: true, anchor: { lines: { selection: { side: "old", start: 3, end: 3 } } } }), "Was old L3");
+  assert.equal(commentLocation({ position: null }), "File comment");
+});

@@ -1,0 +1,222 @@
+import { div, list } from "gpui-kit";
+import { v_flex, h_flex, h_resizable, resizable_panel, v_virtual_list, Scrollbar, Textarea } from "gpui-base";
+import { theme, settings, setShared } from "herdr";
+import { splitRows, splitSelectionRow, selected, pendingComments, unreadItems, fileStats, diffEntries, commentStatus, commentLocation } from "./review.js";
+
+function pageCards(self, id, items, render) {
+  self.cardPages ??= new Map();
+  const pages = Math.max(1, Math.ceil(items.length / 20));
+  const page = Math.min(self.cardPages.get(id) ?? 0, pages - 1);
+  return v_flex().gap(3)
+    .children(items.slice(page * 20, (page + 1) * 20).map(render))
+    .when(pages > 1, el => el.child(h_flex().p(8).gap(6).items_center()
+      .child(self.button(`${id}-previous`, "Previous", cx => { self.cardPages.set(id, page - 1); cx.notify(); }, page > 0))
+      .child(div().text_size(11).child(`${page + 1} / ${pages}`))
+      .child(self.button(`${id}-next`, "Next", cx => { self.cardPages.set(id, page + 1); cx.notify(); }, page + 1 < pages))));
+}
+
+// Pure row builders: deferred native list renderers cannot register handlers.
+function codeCell(row, side, selection, t, marks, self, highlights) {
+  if (!row) return div().flex_1().min_w(0).bg(t.raised);
+  const active = selected(row, selection) && (!side || selection?.side === side);
+  const color = row.kind === "add" ? t.ansi2 : row.kind === "delete" ? t.ansi1 : t.dim;
+  const number = side ? row[side] : null;
+  const count = marks.get(`${side ?? (row.new != null ? "new" : "old")}:${number ?? row.new ?? row.old}`) ?? 0;
+  return h_flex().flex_1().min_w(0).min_h(26).py(3).pr(12).gap(9).items_start()
+    .bg(active ? t.selected : row.kind === "add" ? t.ansi2 + "18" : row.kind === "delete" ? t.ansi1 + "18" : t.background)
+    .border_l(2).border_color(active ? t.accent : t.border)
+    .when(!side, el => el.child(div().w(44).flex_none().text_right().text_color(t.dim).child(row.old == null ? "" : String(row.old))))
+    .child(div().w(44).flex_none().text_right().text_color(t.dim).child(side ? String(number ?? "") : String(row.new ?? "")))
+    .child(div().w(10).flex_none().text_color(color).child(row.kind === "add" ? "+" : row.kind === "delete" ? "−" : ""))
+    .child(self.codeText(row, side, t, highlights))
+    .when(count > 0, el => el.child(div().text_color(t.accent).text_size(11).child(`● ${count}`)));
+}
+
+function diffRow(row, split, selection, t, font, marks, self, highlights) {
+  if (row.kind === "hunk" || row.kind === "meta") {
+    return div().w_full().min_h(29).px(14).py(5).bg(t.raised).text_color(t.muted)
+      .font_family(font).text_size(11).child(row.text);
+  }
+  return h_flex().w_full().min_h(26).font_family(font).text_size(13).cursor_pointer()
+    .when(split, el => el.child(codeCell(row.old, "old", selection, t, marks, self, highlights)).child(codeCell(row.new, "new", selection, t, marks, self, highlights)))
+    .when(!split, el => el.child(codeCell(row, null, selection, t, marks, self, highlights)));
+}
+
+function inlineNote(comment, active, t) {
+  const status = commentStatus(comment);
+  return v_flex().id(`full-inline-${comment.id}`).mx(14).my(8).p(12).gap(6).rounded(7).bg(t.surface)
+    .border_1().border_color(active ? t.accent : t.border).cursor_pointer()
+    .child(h_flex().gap(8).items_center().text_size(11)
+      .child(div().text_color(comment.read ? t.dim : t.accent).child(comment.read ? "Read" : "● Unread"))
+      .child(div().flex_1().text_color(t.muted).child(commentLocation(comment)))
+      .child(div().text_color(t[status.tone]).child(status.label)))
+    .child(div().text_size(13).child(comment.body))
+    .child(div().text_size(10.5).text_color(t.dim).child("Click to mark read, resolve or reopen"));
+}
+
+export function renderFull(self, cx) {
+  const t = theme(), font = settings().font ?? "JetBrains Mono";
+  const data = self.data, snapshot = data?.snapshot, files = snapshot?.files ?? [], comments = data?.comments ?? [];
+  const file = files.find(f => f.path === self.open), fileIndex = files.indexOf(file);
+  const fileComments = comments.filter(c => c.path === self.open);
+  const threads = self.github?.threads ?? [];
+  const counts = new Map(), marks = new Map();
+  for (const c of comments) counts.set(c.path, (counts.get(c.path) ?? 0) + 1);
+  for (const c of fileComments) if (!c.stale && c.position) {
+    const key = `${c.position.side}:${c.position.end}`;
+    marks.set(key, (marks.get(key) ?? 0) + 1);
+  }
+  const split = self.diffStyle === "split";
+  const rows = file ? split ? splitRows(file.rows) : file.rows : [];
+  const entries = diffEntries(rows, unreadItems(fileComments, self.onlyUnread), split);
+  const byKey = new Map(entries.map(entry => [entry.key, entry]));
+  const activeComment = fileComments.find(comment => comment.id === self.activeComment);
+  const highlights = self.syntaxCache?.key === JSON.stringify([snapshot?.revision, file?.path]) ? self.syntaxCache.tokens : null;
+  const stats = file ? fileStats(file) : null;
+  const hasDraft = Boolean(self.editor.value().trim()), selection = self.selection;
+  const pending = pendingComments(comments), batch = pending.length + self.threadQueue.size;
+  const target = self.currentSession(), unread = comments.filter(c => !c.read).length + threads.filter(c => !c.read).length;
+  const listId = `full-diff-${file?.path ?? "empty"}-${self.diffStyle}`;
+  const diff = v_flex().id("full-diff-frame").relative().flex_1().min_h(0)
+    .on_mouse_down("left", event => { self.diffPress = { event, path: file?.path, revision: snapshot?.revision }; })
+    .child(list(listId, entries.length, index => entries[index].key, index => {
+      const entry = entries[index];
+      return entry.comment ? inlineNote(entry.comment, entry.comment.id === self.activeComment, t)
+        : diffRow(entry.row, split, selection, t, font, marks, self, highlights);
+    })
+      .size_full().on_item_click((key, cx) => {
+        if (!file || self.open !== file.path || self.data?.snapshot.revision !== snapshot.revision) return;
+        const entry = byKey.get(key);
+        if (!entry) return;
+        if (entry.comment) {
+          if (hasDraft) { self.notice = "Save or cancel your draft before opening a comment."; cx.notify(); return; }
+          self.activeComment = entry.comment.id; self.composerOpen = false; self.selection = null; cx.notify(); return;
+        }
+        if (file.truncated) return;
+        const item = entry.row;
+        const captured = self.diffPress;
+        const press = captured?.path === file.path && captured?.revision === snapshot.revision ? captured.event : null;
+        let row = item;
+        if (split) {
+          if (!press?.bounds || !press?.local_position) return;
+          row = splitSelectionRow(item, press.local_position.x < press.bounds.width / 2 ? "old" : "new");
+        }
+        if (row && (row.old != null || row.new != null)) self.selectLine(row, press, cx);
+        self.diffPress = null;
+      }))
+    .child(Scrollbar.vertical(listId).absolute().inset_0());
+
+  const main = v_flex().size_full().min_w(0).min_h(0)
+    .child(h_flex().h(44).flex_none().px(16).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .child(self.button("full-code", "Code", cx => { self.view = "diff"; cx.notify(); }, true, self.view === "diff" ? "secondary" : "quiet"))
+      .child(self.button("full-comments", `Comments · ${comments.length}`, cx => { self.view = "comments"; cx.notify(); }, true, self.view === "comments" ? "secondary" : "quiet"))
+      .child(self.button("full-github", `GitHub · ${threads.length}`, cx => { self.view = "github"; self.refreshGithub(cx); cx.notify(); }, true, self.view === "github" ? "secondary" : "quiet"))
+      .child(div().flex_1())
+      .when(self.view === "diff", el => el
+        .child(self.button("full-syntax", self.syntax ? "Syntax" : "Plain", cx => {
+          self.syntax = !self.syntax; self.rememberFull({ syntax: self.syntax }); self.prepareSyntax(self.data?.snapshot); cx.notify();
+        }, true, self.syntax ? "secondary" : "quiet"))
+        .child(self.button("full-unified", "Unified", cx => { self.diffStyle = "unified"; self.rememberFull({ diffStyle: "unified" }); setShared("annotator.diffStyle", "unified"); cx.notify(); }, true, !split ? "secondary" : "quiet"))
+        .child(self.button("full-split", "Split", cx => { self.diffStyle = "split"; self.rememberFull({ diffStyle: "split" }); setShared("annotator.diffStyle", "split"); cx.notify(); }, true, split ? "secondary" : "quiet"))))
+    .when(self.view === "diff", el => el
+      .child(v_flex().px(16).py(12).gap(8).flex_none().bg(t.surface).border_b(1).border_color(t.border)
+        .child(h_flex().gap(8).items_center()
+          .child(div().flex_1().min_w(0).truncate().font_semibold().child(file?.path ?? self.snapshotError?.title ?? (snapshot ? "No changes to review" : "Loading checkout…")))
+          .when(Boolean(stats?.added), el => el.child(self.badge(`+${stats.added}`, t.ansi2)))
+          .when(Boolean(stats?.removed), el => el.child(self.badge(`−${stats.removed}`, t.ansi1)))
+          .child(self.button("full-prev-file", "‹", cx => self.selectFile(files[fileIndex - 1].path, cx), fileIndex > 0))
+          .child(self.button("full-next-file", "›", cx => self.selectFile(files[fileIndex + 1].path, cx), fileIndex >= 0 && fileIndex + 1 < files.length)))
+        .child(h_flex().gap(6).items_center()
+          .child(self.button("full-context-more", "+20 context", cx => self.expandContext(Math.min(1000000, self.contextLines + 20), cx), Boolean(file) && self.contextLines < 1000000))
+          .child(self.button("full-context-all", "Full context", cx => self.expandContext(1000000, cx), Boolean(file) && self.contextLines < 1000000))
+          .child(self.button("full-context-collapse", "Collapse", cx => self.expandContext(3, cx), self.contextLines > 3))
+          .child(self.button("full-new-file-comment", "File comment", cx => {
+            self.selection = null; self.activeComment = null; self.composerOpen = true; self.needsSelection = false; self.editor.focus(); cx.notify();
+          }, Boolean(file)))
+          .child(div().flex_1())
+          .child(div().text_size(11).text_color(t.dim).child("Click a line · Shift-click for a range"))))
+      .when(Boolean(file?.note), el => el.child(div().p(10).text_color(t.ansi3).child(file.note)))
+      .when(split && Boolean(file), el => el.child(h_flex().h(26).flex_none().bg(t.raised).text_size(11).text_color(t.muted)
+        .child(div().flex_1().px(14).child("Before"))
+        .child(div().flex_1().px(14).child("After"))))
+      .child(diff))
+    .when(self.view === "comments", el => el.child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
+      .child(pageCards(self, "full-local", unreadItems(comments, self.onlyUnread), c => self.commentCard(c, t, true)))))
+    .when(self.view === "github", el => el.child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
+      .child(div().p(14).text_size(12).text_color(t.muted).child(self.github?.error ?? self.github?.pull_request?.url ?? "No open PR found. Refresh checks GitHub now."))
+      .child(pageCards(self, "full-threads", unreadItems(threads, self.onlyUnread), thread => self.githubCard(thread, t)))))
+    .when(self.view === "diff" && !self.commentsOpen && Boolean(activeComment), el => el.child(v_flex().id("full-comment-actions").max_h(230).flex_none().overflow_y_scrollbar().bg(t.chrome)
+      .child(self.button("full-close-comment", "Close comment", cx => { self.activeComment = null; cx.notify(); }))
+      .child(self.commentCard(activeComment, t))))
+    .when(!self.commentsOpen && Boolean(selection || hasDraft || self.composerOpen), el => el.child(v_flex().id("full-composer").flex_none().p(12).gap(6).bg(t.surface).border_t(1).border_color(t.border)
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12).child(selection ? `${selection.side === "old" ? "Old" : "New"} L${selection.start}–${selection.end}` : `File comment · ${file?.path ?? ""}`))
+        .child(self.button("full-file-note", "Whole file", cx => { self.selection = null; self.needsSelection = false; cx.notify(); }, Boolean(file)))
+        .child(self.button("full-cancel", "Cancel", cx => { self.editor.set_value(""); self.selection = null; self.composerOpen = false; self.needsSelection = false; self.drafts.delete(self.context); cx.notify(); })))
+      .child(Textarea.new(self.editor).h(70).w_full().text_size(13))
+      .child(h_flex().justify_between().items_center()
+        .child(div().text_size(11).text_color(t.dim).child("⌘Enter / Ctrl+Enter saves · does not send"))
+        .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), Boolean(file) && hasDraft && !self.needsSelection, "primary")))));
+
+  const inspector = () => v_flex().size_full().min_h(0).bg(t.chrome).border_l(1).border_color(t.border)
+    .child(h_flex().h(44).px(12).items_center().gap(6).flex_none()
+      .child(div().font_semibold().flex_1().child("File comments"))
+      .child(self.badge(String(fileComments.length), t.muted, t.raised)))
+    .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
+      .child(pageCards(self, `inspector-${self.open}`, unreadItems(fileComments, self.onlyUnread), c => self.commentCard(c, t)))
+      .when(!fileComments.length, el => el.child(div().p(14).text_size(12).text_color(t.dim).child("Select source lines to leave a comment. Saved comments appear here."))))
+    .child(v_flex().p(12).gap(8).flex_none().bg(t.surface).border_t(1).border_color(t.border)
+      .child(div().font_semibold().text_size(12).text_color(selection ? t.accent : t.foreground)
+        .child(selection ? `${selection.side === "old" ? "Old" : "New"} L${selection.start}–${selection.end}` : "Comment on this file"))
+      .child(div().truncate().text_size(11).text_color(t.dim).child(file?.path ?? "Select a file"))
+      .child(Textarea.new(self.editor).h(110).w_full().text_size(13))
+      .child(h_flex().gap(5)
+        .child(self.button("full-file-note", "Whole file", cx => { self.selection = null; self.needsSelection = false; cx.notify(); }, Boolean(file)))
+        .child(self.button("full-cancel", "Cancel", cx => { self.editor.set_value(""); self.selection = null; self.needsSelection = false; self.drafts.delete(self.context); cx.notify(); }, hasDraft || Boolean(selection))))
+      .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), Boolean(file) && hasDraft && !self.needsSelection, "primary").tooltip("Save comment · ⌘Enter / Ctrl+Enter")));
+
+  return v_flex().id("annotator-full").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13).track_focus(self.handle)
+    .on_key_down((event, cx) => self.handleKey(event, cx))
+    .child(h_flex().h(58).flex_none().px(18).gap(12).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .child(div().font_semibold().text_size(18).child("Review"))
+      .child(self.badge(`${snapshot ? files.length : "—"} files${self.snapshotError && snapshot ? " · cached" : ""}`, t.muted, t.raised))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().truncate().font_semibold().text_size(12).child(snapshot?.branch ?? "Loading checkout…"))
+        .child(div().truncate().text_size(11).text_color(t.dim).child(`${snapshot?.scope.machine ?? "local"} · ${snapshot?.scope.repo ?? ""}`)))
+      .child(self.button("full-scope-local", "Uncommitted", cx => self.changeComparison("uncommitted", null, cx), true, self.mode === "uncommitted" ? "secondary" : "quiet"))
+      .child(self.button("full-scope-branch", "Branch", cx => self.changeComparison("branch", self.base, cx), true, self.mode === "branch" ? "secondary" : "quiet"))
+      .child(self.button("full-base", self.baseLabel(), cx => { self.baseOpen = !self.baseOpen; cx.notify(); }))
+      .child(self.button("full-refresh", self.busy ? "Updating…" : "↻ Refresh", cx => { self.refresh(cx, true); self.refreshGithub(cx, true); })))
+    .when(self.baseOpen, el => el.child(v_flex().h(130).overflow_y_scrollbar()
+      .child(self.button("full-base-auto", "Auto · prefer local develop", cx => self.changeComparison("branch", null, cx, false)))
+      .children(self.bases.map(base => self.button(`full-base-${base}`, base, cx => self.changeComparison("branch", base, cx, true))))))
+    .when(Boolean(self.error), el => el.child(self.errorCard(t)))
+    .when(Boolean(self.notice && !self.error), el => el.child(div().px(16).py(8).text_size(12).text_color(t.muted).child(self.notice)))
+    .child(h_flex().h(36).px(12).gap(8).items_center().flex_none().border_b(1).border_color(t.border)
+      .child(self.button("full-toggle-files", self.filesOpen ? "Hide files" : "Show files", cx => { self.filesOpen = !self.filesOpen; self.rememberFull({ filesOpen: self.filesOpen }); cx.notify(); }))
+      .child(self.button("full-unread", self.onlyUnread ? "● Unread only" : `All comments · ${unread} unread`, cx => { self.onlyUnread = !self.onlyUnread; self.rememberFull({ onlyUnread: self.onlyUnread }); cx.notify(); }, true, "secondary"))
+      .child(div().flex_1())
+      .child(self.button("full-toggle-comments", self.commentsOpen ? "Hide comments pane" : "Comments pane", cx => {
+        self.commentsOpen = !self.commentsOpen; self.rememberFull({ commentsOpen: self.commentsOpen }); setShared("annotator.fullComments", self.commentsOpen); cx.notify();
+      }, true, self.commentsOpen ? "secondary" : "quiet"))
+      .child(div().text_size(11).text_color(t.dim).child("Read markers are local · GitHub is read-only")))
+    .child(h_resizable(self.commentsOpen ? "annotator-reader-with-comments" : "annotator-reader").flex_1().min_h(0)
+      .on_resize((sizes, cx) => { self.fullWidths = sizes.slice(0, 2); self.commentWidth = sizes[2] ?? self.commentWidth; setShared("annotator.fullWidths", sizes); cx.notify(); })
+      .child(resizable_panel().size(self.fullWidths[0]).size_range(160, 500).visible(self.filesOpen)
+        .child(v_flex().relative().size_full().min_h(0).bg(t.chrome)
+          .child(v_virtual_list("full-files", files.length, 42, index => files[index].path,
+            range => files.slice(range.start, range.end).map(f => self.fileRow(f, counts.get(f.path) ?? 0, t)))
+            .size_full().on_item_click((path, cx) => self.selectFile(path, cx)))
+          .child(Scrollbar.vertical("full-files").absolute().inset_0())))
+      .child(resizable_panel().size(self.fullWidths[1]).size_range(300).child(main))
+      .when(self.commentsOpen, el => el.child(resizable_panel().size(self.commentWidth).size_range(280, 600).child(inspector()))))
+    .when(Boolean(self.exportText), el => el.child(v_flex().p(12).gap(5).bg(t.surface)
+      .child(Textarea.new(self.output).h(110).w_full())
+      .child(self.button("full-close-export", "Close export", cx => { self.exportText = null; cx.notify(); }))))
+    .child(h_flex().h(60).flex_none().px(16).gap(12).items_center().bg(t.chrome).border_t(1).border_color(t.border)
+      .child(v_flex().flex_1().min_w(0).gap(3)
+        .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${target.address} · ${target.status}` : "Source chat unavailable · sending disabled"))
+        .child(div().text_size(11).text_color(t.dim).child(self.snapshotError ? `${snapshot ? "Cached review · " : ""}Refresh must succeed before saving or sending.` : hasDraft ? "Save or cancel your draft before sending." : `${pending.length} local comments · ${self.threadQueue.size} GitHub threads ready`)))
+      .child(self.button("full-export", "Export…", cx => self.act("export", { threads: [...self.threadQueue.values()] }, cx), batch > 0))
+      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !hasDraft, "primary")));
+}

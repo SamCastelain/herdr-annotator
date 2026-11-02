@@ -1,0 +1,6 @@
+/target/
+.DS_Store
+*.error
+mods/annotator/*.d.ts
+mods/annotator/jsconfig.json
+__pycache__/
