@@ -855,6 +855,75 @@ fn unchanged_context_expands_and_its_notes_survive_collapsing() {
 }
 
 #[test]
+fn preparation_keeps_multiple_anchor_depths_out_of_visible_rows() {
+    let f = Fixture::new(true);
+    let original = (1..=120)
+        .map(|n| format!("source line {n}\n"))
+        .collect::<String>();
+    for path in ["file.txt", "second.txt"] {
+        fs::write(f.repo.join(path), &original).unwrap();
+    }
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-m", "two long files"]);
+    for path in ["file.txt", "second.txt"] {
+        fs::write(
+            f.repo.join(path),
+            original.replace("source line 60\n", "changed line 60\n"),
+        )
+        .unwrap();
+    }
+    for (path, context, line) in [("file.txt", 23, 40), ("second.txt", 45, 20)] {
+        let view = json!({"file":path,"context":context});
+        let preview = f.request(json!({"op":"snapshot","view":view})).unwrap();
+        f.request(
+            json!({"op":"add","view":view,"revision":preview["snapshot"]["revision"],
+            "path":path,"body":path,"selection":{"side":"new","start":line,"end":line}}),
+        )
+        .unwrap();
+    }
+    let collapsed = f.snapshot();
+    assert!(
+        collapsed["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["stale"] == false)
+    );
+    for file in collapsed["snapshot"]["files"].as_array().unwrap() {
+        assert!(
+            file["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["new"] != 20 && r["new"] != 40)
+        );
+    }
+    let id = &collapsed["comments"][0]["id"];
+    let read = f.request(json!({"op":"read","id":id,"read":true})).unwrap();
+    assert_eq!(
+        read["snapshot"]["revision"],
+        collapsed["snapshot"]["revision"]
+    );
+    let exported = f
+        .request(json!({"op":"export","revision":read["snapshot"]["revision"]}))
+        .unwrap();
+    assert!(exported["text"].as_str().unwrap().contains("second.txt"));
+    // Editing only hidden validation context still changes the coherent revision.
+    fs::write(
+        f.repo.join("second.txt"),
+        original
+            .replace("source line 60\n", "changed line 60\n")
+            .replace("source line 20\n", "edited hidden context\n"),
+    )
+    .unwrap();
+    assert!(
+        f.request(json!({"op":"export","revision":read["snapshot"]["revision"]}))
+            .unwrap_err()
+            .contains("Diff changed")
+    );
+}
+
+#[test]
 fn read_markers_persist_without_resolving_or_excluding_feedback() {
     let f = Fixture::new(true);
     f.change();

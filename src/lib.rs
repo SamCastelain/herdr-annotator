@@ -1,6 +1,7 @@
 mod git;
 mod github;
 mod model;
+mod preparation;
 mod store;
 
 pub use model::*;
@@ -51,20 +52,9 @@ impl Engine {
                 json!({"github": github::refresh(&self.state_dir, scope, *force, *poll_seconds)?}),
             );
         }
-        let mut snapshot = git::snapshot(request.scope(), &request.view())?;
-        let mut store = store::Store::open(&self.state_dir, &snapshot.scope)?;
-        let paths = store
-            .comments
-            .iter()
-            .map(|c| c.path.clone())
-            .collect::<Vec<_>>();
-        git::hydrate(&mut snapshot, &paths)?;
-        git::seal(&mut snapshot)?;
-        let mut validation = git::validation(&snapshot, &store.comments)?;
-        git::seal(&mut validation)?;
-        snapshot.revision =
-            model::hash(format!("{}:{}", snapshot.revision, validation.revision).as_bytes());
-        validation.revision = snapshot.revision.clone();
+        let (review, mut store) =
+            preparation::PreparedReview::open(&self.state_dir, request.scope(), &request.view())?;
+        let snapshot = &review.visible;
         match request {
             Request::Snapshot { .. } => (),
             Request::Add {
@@ -128,9 +118,9 @@ impl Engine {
                 ..
             } => {
                 snapshot.require_revision(&revision)?;
-                let cache = self.thread_cache(&snapshot, &threads)?;
+                let cache = self.thread_cache(snapshot, &threads)?;
                 return Ok(
-                    json!({"text": combined_feedback(&validation, &store.comments, include_local, cache.as_ref(), &threads)?}),
+                    json!({"text": review.feedback(&store.comments, include_local, cache.as_ref(), &threads)?}),
                 );
             }
             Request::Send {
@@ -141,17 +131,13 @@ impl Engine {
                 ..
             } => {
                 snapshot.require_revision(&revision)?;
-                let mut cache = self.thread_cache(&snapshot, &threads)?;
-                let text = combined_feedback(
-                    &validation,
-                    &store.comments,
-                    include_local,
-                    cache.as_ref(),
-                    &threads,
-                )?;
+                let mut cache = self.thread_cache(snapshot, &threads)?;
+                let text =
+                    review.feedback(&store.comments, include_local, cache.as_ref(), &threads)?;
                 git::validate_target(&snapshot.scope, &target)?;
                 // Persist the intent first. A lost reply must never lead to an automatic duplicate send.
-                let ids: Vec<String> = views(&validation, &store.comments)
+                let ids: Vec<String> = review
+                    .comments(&store.comments)
                     .into_iter()
                     .filter(|v| {
                         include_local
@@ -180,7 +166,7 @@ impl Engine {
                 if let Some(cache) = &mut cache {
                     cache.mark(&threads, Delivery::Sent)?;
                 }
-                let comments = views(&validation, &store.comments);
+                let comments = review.comments(&store.comments);
                 return Ok(
                     json!({"snapshot": snapshot, "comments": comments, "github": cache.as_ref().map(github::Cache::view)}),
                 );
@@ -189,7 +175,7 @@ impl Engine {
                 unreachable!("GitHub reads are handled before diff acquisition")
             }
         }
-        let comments = views(&validation, &store.comments);
+        let comments = review.comments(&store.comments);
         Ok(json!({"snapshot": snapshot, "comments": comments}))
     }
 
