@@ -1,86 +1,19 @@
+use crate::process::{MAX_OUTPUT, Output};
 use crate::{
     ChangedFile, Comparison, DiffLine, DiffMode, Result, Scope, Snapshot, ViewSpec, model::hash,
+    process,
 };
 use serde_json::Value;
-use std::{
-    io::Read,
-    process::{Command, Stdio},
-    thread,
-    time::Duration,
-};
-use wait_timeout::ChildExt;
+use std::process::Command;
 
-const MAX_OUTPUT: usize = 512 * 1024;
 const MAX_ROWS: usize = 2000;
 
-pub(crate) struct Output {
-    pub code: i32,
-    pub text: String,
-    pub truncated: bool,
-}
-
-fn drain(mut reader: impl Read, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut out = Vec::new();
-    let mut buf = [0; 8192];
-    let mut truncated = false;
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        let keep = n.min(limit.saturating_sub(out.len()));
-        out.extend_from_slice(&buf[..keep]);
-        truncated |= keep != n;
-    }
-    Ok((out, truncated))
-}
-
 pub(crate) fn run(mut command: Command) -> Result<Output> {
-    run_limit(&mut command, MAX_OUTPUT)
-}
-
-fn run_limit(command: &mut Command, limit: usize) -> Result<Output> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Cannot start command: {e}"))?;
-    let stdout = child.stdout.take().ok_or("Missing stdout")?;
-    let stderr = child.stderr.take().ok_or("Missing stderr")?;
-    let out = thread::spawn(move || drain(stdout, limit));
-    let err = thread::spawn(move || drain(stderr, 8192));
-    let status = child
-        .wait_timeout(Duration::from_secs(60))
-        .map_err(|e| e.to_string())?;
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-        // Don't join readers: an unrelated grandchild may have inherited a pipe.
-        return Err("Command timed out after 60 seconds".into());
+    let out = process::run(&mut command, MAX_OUTPUT)?;
+    if out.code != 0 {
+        return Err(out.failure("herdr-core command"));
     }
-    let (bytes, truncated) = out
-        .join()
-        .map_err(|_| "stdout reader failed")?
-        .map_err(|e| e.to_string())?;
-    let (errors, _) = err
-        .join()
-        .map_err(|_| "stderr reader failed")?
-        .map_err(|e| e.to_string())?;
-    let code = status.and_then(|s| s.code()).unwrap_or(-1);
-    let text = String::from_utf8(bytes)
-        .map_err(|_| "Non-UTF-8 output is not supported in this first version")?;
-    if code != 0 && code != 1 {
-        return Err(format!(
-            "Command failed ({code}): {}",
-            String::from_utf8_lossy(&errors).trim()
-        ));
-    }
-    Ok(Output {
-        code,
-        text,
-        truncated,
-    })
+    Ok(out)
 }
 
 fn hc() -> Command {
@@ -95,7 +28,7 @@ pub(crate) fn git(scope: &Scope, args: &[&str]) -> Result<Output> {
             "--on",
             machine,
             "--timeout",
-            "45",
+            "25",
             "--env",
             "GIT_TERMINAL_PROMPT=0",
             "git",
@@ -122,14 +55,19 @@ pub(crate) fn git(scope: &Scope, args: &[&str]) -> Result<Output> {
     let metadata = args.contains(&"--name-status")
         || args.first() == Some(&"status")
         || args.first() == Some(&"for-each-ref");
-    run_limit(
+    let out = process::run(
         &mut command,
         if metadata {
             8 * 1024 * 1024
         } else {
             MAX_OUTPUT
         },
-    )
+    )?;
+    // Exit 1 is meaningful for negative Git queries and no-index diffs.
+    if out.code != 0 && out.code != 1 {
+        return Err(out.failure("Git command"));
+    }
+    Ok(out)
 }
 
 pub(crate) fn required(scope: &Scope, args: &[&str]) -> Result<String> {

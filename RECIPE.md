@@ -94,6 +94,10 @@ Herdr App mods are JavaScript, not Rust dynamic libraries. Rust is a local helpe
 remote cores do not load this mod. `hc send` includes Enter. The mod's `exec`
 has a 30-second limit. Native checks render only the initial state; also inspect
 the live panel. Anchor old/new sides separately and keep literal Git pathspecs.
+The helper shares a 25-second subprocess budget across each request, including
+GitHub pagination and Send. Capture drains both pipes with bounded retention;
+inherited writers cannot keep it waiting indefinitely. Local process-group
+cleanup does not confirm remote cancellation. Unconfirmed Send stays uncertain.
 Honor documented preview limits, preserve stale notes and never overwrite
 corrupt stores. Do not edit shipped mods/layouts or stage/commit review targets.
 

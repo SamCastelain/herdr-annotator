@@ -336,10 +336,16 @@ fn gh(args: &[String]) -> Result<Value> {
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_PAGER", "cat")
         .args(args);
-    let out = git::run(command)
-        .map_err(|_| "GitHub request failed. Check gh auth status on this computer.")?;
-    if out.code != 0 || out.truncated {
-        return Err("GitHub request failed or exceeded its size limit. Check gh auth status on this computer.".into());
+    let out = crate::process::run(&mut command, crate::process::MAX_OUTPUT)
+        .map_err(|e| format!("GitHub request failed: {e}"))?;
+    if out.code != 0 {
+        return Err(format!(
+            "{}. Check gh auth status and repository access.",
+            out.failure("GitHub request")
+        ));
+    }
+    if out.truncated {
+        return Err("GitHub request exceeded its size limit".into());
     }
     let json: Value =
         serde_json::from_str(&out.text).map_err(|_| "GitHub returned invalid JSON")?;

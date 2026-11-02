@@ -2,6 +2,7 @@ mod git;
 mod github;
 mod model;
 mod preparation;
+mod process;
 mod store;
 
 pub use model::*;
@@ -32,6 +33,10 @@ impl Engine {
     }
 
     pub fn handle(&self, request: Request) -> Result<Value> {
+        process::within_budget(|| self.handle_request(request))
+    }
+
+    fn handle_request(&self, request: Request) -> Result<Value> {
         if let Request::GithubRead {
             scope,
             thread,
