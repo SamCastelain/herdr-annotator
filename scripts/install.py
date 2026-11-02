@@ -19,7 +19,7 @@ mod = app_home / "mods/annotator"
 binary = home / ".local/bin/herdr-annotator"
 receipt = home / ".local/share/herdr-annotator/install.json"
 installed = json.loads(receipt.read_text()) if receipt.exists() else {}
-files = ["mod.json", "review.js", "main.js", "full.js", "syntax.js"]
+files = ["mod.json", "review.js", "main.js", "full.js", "syntax.js", "draft.js"]
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 layout = None

@@ -4,6 +4,7 @@ import { spaces, panes, focused, agents, exec, home, props, theme, settings, sha
 import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, unreadItems, layoutSidebar, reviewSidebarTransition, fullPreferences, snapshotFailure, needsFreshSnapshot, savedBaseChoice } from "./review.js";
 import { renderFull } from "./full.js";
 import { highlightDiff } from "./syntax.js";
+import { DraftLifecycle } from "./draft.js";
 
 function location() {
   const fixed = props()?.scope;
@@ -25,8 +26,8 @@ const contextKey = () => JSON.stringify(location());
 
 export default class Annotator extends View {
   init(_props, cx) {
-    this.data = null; this.open = null; this.selection = null; this.busy = false;
-    this.error = null; this.notice = null; this.context = null; this.drafts = new Map();
+    this.data = null; this.open = null; this.busy = false;
+    this.error = null; this.notice = null; this.context = null;
     this.snapshotError = null; this.showErrorDetails = false;
     this.sessions = new Map(); this.exportText = null;
     this.full = props()?.presentation === "full"; this.onlyUnread = false;
@@ -46,6 +47,7 @@ export default class Annotator extends View {
     this.sizes = Array.isArray(sizes) && sizes.length === 3 && sizes.every(n => Number.isFinite(n) && n > 0) ? sizes : [140, 360, 175];
     this.view = ["comments", "github"].includes(props()?.view) ? props().view : "diff"; this.filesOpen = this.full ? preferences.filesOpen : true;
     this.editor = TextareaState.new({ placeholder: "What should change? Ask a question or leave feedback…", rows: 3 });
+    this.draft = new DraftLifecycle(this.editor);
     this.editor.on("change", (_e, cx) => cx.notify());
     this.editor.on("focus", () => { this.editorFocused = true; });
     this.editor.on("blur", () => { this.editorFocused = false; });
@@ -66,6 +68,22 @@ export default class Annotator extends View {
   }
 
   helper() { return props()?.helper ?? `${home()}/.local/bin/herdr-annotator`; }
+
+  get selection() { return this.draft.selection; }
+  set selection(value) { this.draft.selection = value; }
+  get needsSelection() { return this.draft.needsSelection; }
+  get composerOpen() { return this.draft.composerOpen; }
+  set composerOpen(value) { this.draft.composerOpen = value; }
+  get drafts() { return this.draft.saved; }
+
+  fileNote(cx) {
+    this.draft.anchor(null, this.data?.snapshot.revision);
+    this.activeComment = null; this.editor.focus(); cx.notify();
+  }
+
+  cancelDraft(cx) {
+    this.draft.cancel(this.context); this.notice = null; cx.notify();
+  }
 
   fullSettings() {
     return fullPreferences(shared("annotator.fullPreferences"), {
@@ -161,11 +179,8 @@ export default class Annotator extends View {
     if (this.busy) return;
     const next = contextKey();
     if (next !== this.context) {
-      if (this.context) this.drafts.set(this.context, { body: this.editor.value(), selection: this.selection, open: this.open, revision: this.data?.snapshot?.revision, mode: this.mode, base: this.base, baseExplicit: this.baseExplicit, contextLines: this.contextLines });
-      const draft = this.drafts.get(next);
+      const draft = this.draft.enter(next, this.context, { open: this.open, mode: this.mode, base: this.base, baseExplicit: this.baseExplicit, contextLines: this.contextLines }, this.data?.snapshot.revision);
       this.context = next; this.data = null; this.open = draft?.open ?? props()?.file ?? null;
-      this.selection = draft?.selection ?? null; this.editor.set_value(draft?.body ?? "");
-      this.draftRevision = draft?.revision ?? null;
       const preferences = this.fullSettings(), scope = location().scope;
       const savedBase = (shared("annotator.baseRefs") ?? {})[JSON.stringify([scope.machine ?? null, scope.repo])];
       const propBase = props()?.scope?.comparison?.base;
@@ -179,8 +194,7 @@ export default class Annotator extends View {
       this.github = null; this.threadQueue.clear(); this.githubContext = null; this.githubEpoch++;
       this.view = ["comments", "github"].includes(props()?.view) ? props().view : "diff";
     } else if (this.editor.value().trim()) {
-      if (force && this.snapshotError) this.draftRevision = this.data?.snapshot?.revision ?? this.draftRevision;
-      else { this.notice = "Save or cancel your draft before refreshing."; cx.notify(); return; }
+      if (!(force && this.snapshotError)) { this.notice = "Save or cancel your draft before refreshing."; cx.notify(); return; }
     }
     const current = location();
     if (!current.scope.repo) { this.error = "Select a space with a Git checkout."; return; }
@@ -193,7 +207,7 @@ export default class Annotator extends View {
       try {
         const data = await this.request({ op: "snapshot", scope: { ...current.scope, comparison: { mode: this.mode, base: this.baseExplicit ? this.base : null } }, view: { file: this.open, context: this.contextLines } });
         if (contextKey() !== context) return;
-        const changed = this.data && this.data.snapshot.revision !== data.snapshot.revision;
+        const previousRevision = this.data?.snapshot.revision;
         if (this.data && this.data.snapshot.branch !== data.snapshot.branch) {
           this.github = null; this.githubContext = null; this.threadQueue.clear(); this.githubEpoch++;
         }
@@ -201,12 +215,8 @@ export default class Annotator extends View {
         this.bases = data.snapshot.bases ?? [];
         this.base = data.snapshot.scope.comparison?.base ?? this.base;
         if (this.mode === "branch") this.rememberBase(data.snapshot.scope, this.base);
-        if (this.draftRevision && this.draftRevision !== data.snapshot.revision && this.editor.value().trim()) {
+        if (this.draft.observe(data.snapshot.revision, previousRevision)) {
           this.notice = "Diff changed since this draft. Select the intended lines again, or choose File note. Your text is kept.";
-          this.selection = null; this.needsSelection = true;
-        } else {
-          this.needsSelection = false;
-          if (changed) this.selection = null;
         }
         if (!this.open || (!this.editor.value().trim() && !data.snapshot.files.some(f => f.path === this.open))) {
           this.open = data.snapshot.files[0]?.path ?? null;
@@ -224,17 +234,18 @@ export default class Annotator extends View {
     if (this.busy || this.snapshotError || !this.data || contextKey() !== this.context) return;
     const context = this.context;
     const snapshot = this.data.snapshot;
+    const draftToken = op === "add" ? this.draft.capture(context) : null;
     this.busy = true; this.error = null; this.notice = null;
     cx.spawn(async cx => {
       try {
         const data = await this.request({ op, scope: snapshot.scope, view: snapshot.view ?? { file: this.open, context: this.contextLines }, ...(["resolve", "read"].includes(op) ? {} : { revision: snapshot.revision }), ...details });
         if (contextKey() !== context) {
-          if (op === "add") { this.editor.set_value(""); this.drafts.delete(context); }
+          if (draftToken) this.draft.complete(draftToken, this.context);
           return;
         }
         if (op === "export") { this.exportText = data.text; this.output.set_value(data.text); }
         else { this.data = data; this.prepareSyntax(data.snapshot); }
-        if (op === "add") { this.editor.set_value(""); this.selection = null; this.composerOpen = false; this.activeComment = null; this.draftRevision = null; this.drafts.delete(context); this.notice = "Comment saved. It is ready to send with your review."; }
+        if (draftToken) { this.draft.complete(draftToken, this.context); this.activeComment = null; this.notice = "Comment saved. It is ready to send with your review."; }
         if (contextKey() !== context) return;
         if (op === "send") {
           this.notice = `Feedback submitted to the open session (${details.target}). Sent notes remain in this review.`;
@@ -398,14 +409,14 @@ export default class Annotator extends View {
   selectFile(path, cx) {
     if (this.busy) return;
     if (this.editor.value().trim()) { this.notice = "Save or cancel your draft before selecting another file."; cx.notify(); return; }
-    this.open = path; this.selection = null; this.activeComment = null; this.composerOpen = false; this.needsSelection = false; this.notice = null; this.view = "diff"; this.refresh(cx); cx.notify();
+    this.open = path; this.draft.reset(); this.activeComment = null; this.notice = null; this.view = "diff"; this.refresh(cx); cx.notify();
   }
 
   selectLine(row, event, cx) {
     if (this.busy) return;
-    this.selection = selectionFor(this.selection, row, event?.modifiers?.shift);
+    this.draft.anchor(selectionFor(this.selection, row, event?.modifiers?.shift), this.data?.snapshot.revision);
     this.activeComment = null; this.composerOpen = true;
-    this.needsSelection = false; this.exportText = null; this.notice = null; this.editor.focus(); cx.notify();
+    this.exportText = null; this.notice = null; this.editor.focus(); cx.notify();
   }
 
   commentCard(comment, t, showFile = false) {
@@ -589,14 +600,14 @@ export default class Annotator extends View {
         .child(h_flex().items_center().gap(5)
           .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(11.5).text_color(selection ? t.accent : t.foreground)
             .child(selection ? `Comment on ${selection.side === "old" ? "old " : ""}L${selection.start}${selection.end === selection.start ? "" : `–${selection.end}`}` : "Comment on this file"))
-          .when(Boolean(selection) || this.needsSelection, el => el.child(this.button("file-note", "Whole file", cx => { this.selection = null; this.needsSelection = false; cx.notify(); }, Boolean(file)))))
+          .when(Boolean(selection) || this.needsSelection, el => el.child(this.button("file-note", "Whole file", cx => this.fileNote(cx), Boolean(file)))))
         .when(!selection, el => el.child(div().text_size(10.5).text_color(t.dim).child(file ? source.name : "Select a changed file first")))
         .child(div().rounded(5).bg(t.background).border_1().border_color(t.border).p(6)
           .child(Textarea.new(this.editor).h(65).w_full().text_size(13)))
         .child(h_flex().gap(5).items_center()
           .child(div().flex_1().text_size(10.5).text_color(t.dim).child(hasDraft ? "⌘/Ctrl+Enter saves · not sent" : "Saved comments join your review"))
           .when(hasDraft || Boolean(selection), el => el.child(this.button("cancel-note", "Cancel", cx => {
-            this.editor.set_value(""); this.selection = null; this.needsSelection = false; this.notice = null; this.drafts.delete(this.context); cx.notify();
+            this.cancelDraft(cx);
           })))
           .child(this.button("save-note", "+ Save comment", cx => this.saveComment(cx), canSave, "primary").tooltip("Save comment · ⌘Enter / Ctrl+Enter")))))))
       .when(Boolean(this.exportText), el => el.child(v_flex().mx(8).mb(8).p(8).gap(4).rounded(7).bg(t.surface).border_1().border_color(t.border).flex_none()

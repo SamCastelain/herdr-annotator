@@ -131,7 +131,7 @@ export function renderFull(self, cx) {
           .child(self.button("full-context-all", "Full context", cx => self.expandContext(1000000, cx), Boolean(file) && self.contextLines < 1000000))
           .child(self.button("full-context-collapse", "Collapse", cx => self.expandContext(3, cx), self.contextLines > 3))
           .child(self.button("full-new-file-comment", "File comment", cx => {
-            self.selection = null; self.activeComment = null; self.composerOpen = true; self.needsSelection = false; self.editor.focus(); cx.notify();
+            self.fileNote(cx);
           }, Boolean(file)))
           .child(div().flex_1())
           .child(div().text_size(11).text_color(t.dim).child("Click a line · Shift-click for a range"))))
@@ -151,8 +151,8 @@ export function renderFull(self, cx) {
     .when(!self.commentsOpen && Boolean(selection || hasDraft || self.composerOpen), el => el.child(v_flex().id("full-composer").flex_none().p(12).gap(6).bg(t.surface).border_t(1).border_color(t.border)
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12).child(selection ? `${selection.side === "old" ? "Old" : "New"} L${selection.start}–${selection.end}` : `File comment · ${file?.path ?? ""}`))
-        .child(self.button("full-file-note", "Whole file", cx => { self.selection = null; self.needsSelection = false; cx.notify(); }, Boolean(file)))
-        .child(self.button("full-cancel", "Cancel", cx => { self.editor.set_value(""); self.selection = null; self.composerOpen = false; self.needsSelection = false; self.drafts.delete(self.context); cx.notify(); })))
+        .child(self.button("full-file-note", "Whole file", cx => self.fileNote(cx), Boolean(file)))
+        .child(self.button("full-cancel", "Cancel", cx => self.cancelDraft(cx))))
       .child(Textarea.new(self.editor).h(70).w_full().text_size(13))
       .child(h_flex().justify_between().items_center()
         .child(div().text_size(11).text_color(t.dim).child("⌘Enter / Ctrl+Enter saves · does not send"))
@@ -171,8 +171,8 @@ export function renderFull(self, cx) {
       .child(div().truncate().text_size(11).text_color(t.dim).child(file?.path ?? "Select a file"))
       .child(Textarea.new(self.editor).h(110).w_full().text_size(13))
       .child(h_flex().gap(5)
-        .child(self.button("full-file-note", "Whole file", cx => { self.selection = null; self.needsSelection = false; cx.notify(); }, Boolean(file)))
-        .child(self.button("full-cancel", "Cancel", cx => { self.editor.set_value(""); self.selection = null; self.needsSelection = false; self.drafts.delete(self.context); cx.notify(); }, hasDraft || Boolean(selection))))
+        .child(self.button("full-file-note", "Whole file", cx => self.fileNote(cx), Boolean(file)))
+        .child(self.button("full-cancel", "Cancel", cx => self.cancelDraft(cx), hasDraft || Boolean(selection))))
       .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), Boolean(file) && hasDraft && !self.needsSelection, "primary").tooltip("Save comment · ⌘Enter / Ctrl+Enter")));
 
   return v_flex().id("annotator-full").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13).track_focus(self.handle)

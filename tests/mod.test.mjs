@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { readFileSync } from "node:fs";
 import * as review from "../mods/annotator/review.js";
 import * as syntax from "../mods/annotator/syntax.js";
+import { DraftLifecycle } from "../mods/annotator/draft.js";
 
 function harness() {
   const nodes = [], requests = [], jobs = [];
@@ -38,7 +39,7 @@ function harness() {
   });
   const cx = { notify() {}, stop_propagation() {}, focus_handle: () => ({}), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
   const context = {
-    ...review, ...syntax, View: class {}, div: node, h_flex: node, v_flex: node, v_resizable: node, h_resizable: node,
+    ...review, ...syntax, DraftLifecycle, View: class {}, div: node, h_flex: node, v_flex: node, v_resizable: node, h_resizable: node,
     resizable_panel: () => { state.panelCalls = (state.panelCalls ?? 0) + 1; return node(); },
     shared: key => state.shared[key] ?? null, setShared: (key, value) => { state.saved = { key, value }; state.shared[key] = value; },
     layout: () => state.layout,
@@ -174,11 +175,26 @@ test("file-list collapse is local UI state and draft reselection can choose a fi
   h.nodes.find(n => n.id === "toggle-files").events.on_click(null, h.cx);
   const start = h.nodes.length; h.mod.render(h.cx);
   assert.ok(!h.nodes.slice(start).some(n => n.id === "review-files"));
-  h.mod.needsSelection = true; h.mod.editor.set_value("kept draft");
+  h.mod.editor.set_value("kept draft"); h.mod.draft.observe("changed", "r1");
   h.mod.render(h.cx);
   h.nodes.filter(n => n.id === "file-note").at(-1).events.on_click(null, h.cx);
   assert.equal(h.mod.needsSelection, false); assert.equal(h.mod.editor.value(), "kept draft");
   assert.equal(h.requests.length, 2);
+});
+
+test("stale line draft cannot become a file note after a checkout round trip", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.draft.anchor({ side: "new", start: 2, end: 2 }, "r1");
+  h.mod.editor.set_value("line intent"); h.mod.snapshotFailed("Connection timed out", h.state.scope);
+  h.state.revision = "r2"; h.mod.refresh(h.cx, true); await h.drain();
+  assert.equal(h.mod.needsSelection, true);
+  h.state.scope = { repo: "/other", machine: null }; h.mod.refresh(h.cx); await h.drain();
+  h.state.scope = { repo: "/checkout", machine: null }; h.mod.refresh(h.cx); await h.drain();
+  assert.equal(h.mod.needsSelection, true);
+  h.mod.saveComment(h.cx); await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "add").length, 0);
+  h.mod.fileNote(h.cx); h.mod.saveComment(h.cx); await h.drain();
+  assert.equal(h.requests.at(-1).selection, null);
 });
 
 test("late files and context changes request fresh lazy previews", async () => {
