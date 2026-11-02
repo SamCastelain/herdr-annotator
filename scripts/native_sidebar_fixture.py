@@ -28,7 +28,7 @@ script = script.replace('presentation: "full", scope:', 'presentation: "full", h
 record_call = 'await exec("python3", ["-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])", ' + json.dumps(str(record)) + ', JSON.stringify({tab,pane})]);'
 script = script.replace('run("pane.focus", { pane });', 'run("pane.focus", { pane }); ' + record_call)
 (driver / "main.js").write_text(script.replace(auto_open, "", 1))
-for name in ["review.js", "full.js", "syntax.js", "draft.js"]:
+for name in ["review.js", "full.js", "syntax.js", "draft.js", "github-refresh.js"]:
     shutil.copy2(root / "mods/annotator" / name, driver / name)
 (driver / "mod.json").write_text(json.dumps({"place": "none", "overlay": {"width": 360, "height": 300}}))
 subprocess.run(["herdr-app", "check", str(driver)], check=True)

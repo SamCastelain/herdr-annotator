@@ -28,6 +28,7 @@ with tempfile.TemporaryDirectory(prefix="annotator-stress-", dir=args.parent) as
     shutil.copy2(source / "full.js", target / "full.js")
     shutil.copy2(source / "syntax.js", target / "syntax.js")
     shutil.copy2(source / "draft.js", target / "draft.js")
+    shutil.copy2(source / "github-refresh.js", target / "github-refresh.js")
     script = (source / "main.js").read_text()
     script = script.replace("this.refresh(cx);", "this.full = " + json.dumps(args.full) + "; this.mode = " + json.dumps("branch" if args.branch else "uncommitted") + "; this.base = 'origin/develop'; this.context = contextKey(); this.data = " + json.dumps(data) + "; this.open = this.data.snapshot.files[0]?.path; this.prepareSyntax(this.data.snapshot);", 1)
     (target / "main.js").write_text(script)

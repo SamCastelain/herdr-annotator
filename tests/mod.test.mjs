@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import * as review from "../mods/annotator/review.js";
 import * as syntax from "../mods/annotator/syntax.js";
 import { DraftLifecycle } from "../mods/annotator/draft.js";
+import { GithubRefresh } from "../mods/annotator/github-refresh.js";
 
 function harness() {
   const nodes = [], requests = [], jobs = [];
@@ -39,7 +40,7 @@ function harness() {
   });
   const cx = { notify() {}, stop_propagation() {}, focus_handle: () => ({}), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
   const context = {
-    ...review, ...syntax, DraftLifecycle, View: class {}, div: node, h_flex: node, v_flex: node, v_resizable: node, h_resizable: node,
+    ...review, ...syntax, DraftLifecycle, GithubRefresh, View: class {}, div: node, h_flex: node, v_flex: node, v_resizable: node, h_resizable: node,
     resizable_panel: () => { state.panelCalls = (state.panelCalls ?? 0) + 1; return node(); },
     shared: key => state.shared[key] ?? null, setShared: (key, value) => { state.saved = { key, value }; state.shared[key] = value; },
     layout: () => state.layout,
@@ -195,6 +196,22 @@ test("stale line draft cannot become a file note after a checkout round trip", a
   assert.equal(h.requests.filter(r => r.op === "add").length, 0);
   h.mod.fileNote(h.cx); h.mod.saveComment(h.cx); await h.drain();
   assert.equal(h.requests.at(-1).selection, null);
+});
+
+test("new checkout receives GitHub refresh after an old request finishes", async () => {
+  const h = harness(); let release;
+  h.state.reply = async request => {
+    if (request.op === "github" && request.scope.repo === "/checkout") {
+      await new Promise(resolve => { release = resolve; });
+    }
+    return { code: 0, stdout: JSON.stringify({ ok: true, data: request.op === "github"
+      ? { github: { threads: [], repo: request.scope.repo } } : h.snapshot() }) };
+  };
+  h.mod.init({}, h.cx); await new Promise(setImmediate);
+  h.state.scope = { repo: "/new", machine: null }; h.mod.refresh(h.cx);
+  await new Promise(setImmediate); release(); await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "github" && r.scope.repo === "/new").length, 1);
+  assert.equal(h.mod.github.repo, "/new"); assert.equal(h.mod.githubBusy, false);
 });
 
 test("late files and context changes request fresh lazy previews", async () => {

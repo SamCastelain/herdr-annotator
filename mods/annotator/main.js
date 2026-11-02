@@ -5,6 +5,7 @@ import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, se
 import { renderFull } from "./full.js";
 import { highlightDiff } from "./syntax.js";
 import { DraftLifecycle } from "./draft.js";
+import { GithubRefresh } from "./github-refresh.js";
 
 function location() {
   const fixed = props()?.scope;
@@ -42,7 +43,7 @@ export default class Annotator extends View {
     this.commentWidth = Array.isArray(widths) && widths.length === 3 ? widths[2] : 330;
     this.mode = "uncommitted"; this.base = null; this.contextLines = 3; this.baseOpen = false; this.scopeMenuOpen = false;
     this.baseExplicit = false; this.editorFocused = false;
-    this.github = null; this.githubBusy = false; this.threadQueue = new Map(); this.bases = []; this.githubEpoch = 0;
+    this.githubRefresh = new GithubRefresh(); this.bases = [];
     const sizes = shared("annotator.sections");
     this.sizes = Array.isArray(sizes) && sizes.length === 3 && sizes.every(n => Number.isFinite(n) && n > 0) ? sizes : [140, 360, 175];
     this.view = ["comments", "github"].includes(props()?.view) ? props().view : "diff"; this.filesOpen = this.full ? preferences.filesOpen : true;
@@ -75,6 +76,11 @@ export default class Annotator extends View {
   get composerOpen() { return this.draft.composerOpen; }
   set composerOpen(value) { this.draft.composerOpen = value; }
   get drafts() { return this.draft.saved; }
+  get github() { return this.githubRefresh.value; }
+  set github(value) { this.githubRefresh.value = value; }
+  get githubBusy() { return this.githubRefresh.busy; }
+  get githubContext() { return this.githubRefresh.context; }
+  get threadQueue() { return this.githubRefresh.queue; }
 
   fileNote(cx) {
     this.draft.anchor(null, this.data?.snapshot.revision);
@@ -191,7 +197,7 @@ export default class Annotator extends View {
       this.base = draft?.base ?? choice.base; this.baseExplicit = draft?.baseExplicit ?? choice.explicit;
       this.contextLines = draft?.contextLines ?? (this.full ? preferences.contextLines : props()?.context_lines ?? 3); this.bases = [];
       this.exportText = null; this.error = null; this.snapshotError = null; this.showErrorDetails = false; this.notice = null; this.activeComment = null; this.composerOpen = false;
-      this.github = null; this.threadQueue.clear(); this.githubContext = null; this.githubEpoch++;
+      this.githubRefresh.invalidate();
       this.view = ["comments", "github"].includes(props()?.view) ? props().view : "diff";
     } else if (this.editor.value().trim()) {
       if (!(force && this.snapshotError)) { this.notice = "Save or cancel your draft before refreshing."; cx.notify(); return; }
@@ -209,7 +215,7 @@ export default class Annotator extends View {
         if (contextKey() !== context) return;
         const previousRevision = this.data?.snapshot.revision;
         if (this.data && this.data.snapshot.branch !== data.snapshot.branch) {
-          this.github = null; this.githubContext = null; this.threadQueue.clear(); this.githubEpoch++;
+          this.githubRefresh.invalidate();
         }
         this.data = data;
         this.bases = data.snapshot.bases ?? [];
@@ -283,20 +289,11 @@ export default class Annotator extends View {
   }
 
   refreshGithub(cx, force = false) {
-    const context = contextKey(), scope = location().scope, epoch = this.githubEpoch;
-    if (this.githubBusy || this.snapshotError || !scope.repo) return;
-    this.githubBusy = true;
-    cx.spawn(async cx => {
-      try {
-        const data = await this.request({ op: "github", scope, force });
-        if (contextKey() !== context || epoch !== this.githubEpoch) return;
-        this.github = data.github; this.githubContext = context;
-        for (const [id, ref] of this.threadQueue) {
-          if (!this.github?.threads?.some(t => t.id === id && t.fingerprint === ref.fingerprint && !t.resolved && !t.delivery && !t.incomplete)) this.threadQueue.delete(id);
-        }
-      } catch (e) { if (contextKey() === context && epoch === this.githubEpoch) this.github = { ...this.github, error: String(e) }; }
-      finally { this.githubBusy = false; cx.notify(); }
-    });
+    const context = contextKey(), scope = location().scope;
+    if (this.snapshotError || !scope.repo) return;
+    this.githubRefresh.demand(context, scope, force);
+    cx.spawn(cx => this.githubRefresh.drain(request => this.request(request),
+      key => contextKey() === key && !this.snapshotError, () => cx.notify()));
   }
 
   changeComparison(mode, base, cx, explicit = undefined) {
