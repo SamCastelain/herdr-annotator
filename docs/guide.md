@@ -71,8 +71,10 @@ that source binding or enable the full presentation.
    File badges show comment counts; outdated comments stay visible but are excluded
    from sending. The footer explains why Send is disabled instead of hiding them.
 5. **Resolve** hides a note from exports/delivery; **Reopen** makes it pending
-   again. Drafts stay in memory per space/folder while navigating. Saving is
-   explicit; closing/reloading loses unsaved drafts, not saved comments.
+   again. Unfinished comments stay in memory per checkout, file and comparison.
+   Switching files or scopes does not require saving/cancelling first; return
+   to restore the text and anchor. Changed code requires reselection before
+   saving. Closing/reloading loses unsaved drafts, not saved comments.
 6. **Export** shows selectable feedback text without sending anything.
 7. The panel binds automatically to the **open agent session in the current tab**.
     Click **Send review** once. It immediately submits the saved batch using
@@ -138,7 +140,10 @@ to the review; the separate full-width Send action submits the saved batch.
 - **Uncommitted** compares HEAD with staged, unstaged and untracked work.
 - **Branch** compares the base branch's merge-base with the current worktree,
   including committed, staged, unstaged and untracked changes. **Base…** lists
-  local and remote-tracking refs; nothing fetches automatically.
+   local and remote-tracking refs. You can also type `develop`,
+   `origin/develop`, or another available ref and press Enter / **Compare**.
+   Nothing fetches automatically. A failed base lookup does not disable switching
+   to Last commit or Uncommitted.
   **Auto** prefers local `develop`, even if `origin/HEAD` points elsewhere or
   `origin/develop` is stale. Without local `develop`, the previous remote-default
   fallback applies. Picking a named ref pins it; choosing Auto clears that pin.
@@ -339,8 +344,9 @@ run("layout.show", { id: "panel" });
 ```
 
 Focus the target checkout first. Annotator refreshes before selecting the file
-and keeps the current comparison scope. Requests wait during work or an unsaved
-draft, or while another checkout/machine is shown. A request expires after 30
+and keeps the current comparison scope. Requests wait during active operations
+or while another checkout/machine is shown. Existing drafts stay with their
+original file; opening another file does not discard them. A request expires after 30
 seconds; a missing timestamp, relative path, or path containing `.` / `..`
 segments is invalid. A newer request survives an older refresh. A file without
 a diff produces a message and leaves the existing file selected. The API never

@@ -55,8 +55,9 @@ function inlineNote(comment, active, t, self) {
 
 export function renderFull(self, cx) {
   const t = theme(), font = settings().font ?? "JetBrains Mono";
-  const data = self.data, snapshot = data?.snapshot, files = snapshot?.files ?? [], allComments = data?.comments ?? [];
+  const data = self.data, snapshot = data?.snapshot, files = self.reviewFiles(snapshot), allComments = data?.comments ?? [];
   const comments = visibleComments(allComments, self.showResolved);
+  const draftPaths = self.draftPaths();
   const file = files.find(f => f.path === self.open), fileIndex = files.indexOf(file);
   const fileComments = comments.filter(c => c.path === self.open);
   const threads = visibleComments(self.github?.threads ?? [], self.showResolved);
@@ -74,6 +75,7 @@ export function renderFull(self, cx) {
   const highlights = self.syntaxCache?.key === JSON.stringify([snapshot?.revision, file?.path]) ? self.syntaxCache.tokens : null;
   const stats = file ? fileStats(file) : null;
   const hasDraft = self.hasDraft(), hasNoteDraft = Boolean(self.editor.value().trim()), selection = self.selection;
+  const reviewDrafts = self.hasReviewDrafts();
   const pending = pendingComments(allComments), batch = pending.length + self.threadQueue.size;
   const target = self.currentSession(), unread = comments.filter(c => !c.read).length + threads.filter(c => !c.read).length;
   const listId = `full-diff-${file?.path ?? "empty"}-${self.diffStyle}`;
@@ -184,7 +186,7 @@ export function renderFull(self, cx) {
       .child(Textarea.new(self.editor).h(70).w_full().text_size(13))
       .child(h_flex().justify_between().items_center()
         .child(div().text_size(11).text_color(t.dim).child("⌘Enter / Ctrl+Enter saves · does not send"))
-        .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), Boolean(file) && hasDraft && !self.needsSelection, "primary")))));
+        .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), self.canSaveComment(), "primary")))));
 
   const inspector = () => v_flex().size_full().min_h(0).bg(t.chrome).border_l(1).border_color(t.border)
     .child(h_flex().h(44).px(12).items_center().gap(6).flex_none()
@@ -201,7 +203,7 @@ export function renderFull(self, cx) {
       .child(h_flex().gap(5)
         .child(self.button("full-file-note", "Whole file", cx => self.fileNote(cx), Boolean(file)))
         .child(self.button("full-cancel", "Cancel", cx => self.cancelDraft(cx), hasDraft || Boolean(selection))))
-      .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), Boolean(file) && hasDraft && !self.needsSelection, "primary").tooltip("Save comment · ⌘Enter / Ctrl+Enter")));
+      .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), self.canSaveComment(), "primary").tooltip("Save comment · ⌘Enter / Ctrl+Enter")));
 
   return v_flex().id("annotator-full").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13).track_focus(self.handle)
     .on_key_down((event, cx) => self.handleKey(event, cx))
@@ -212,14 +214,12 @@ export function renderFull(self, cx) {
         .child(div().truncate().font_semibold().text_size(12).child(snapshot?.branch ?? "Loading checkout…"))
         .child(div().truncate().text_size(11).text_color(t.dim).child(`${snapshot?.scope.machine ?? "local"} · ${snapshot?.scope.repo ?? ""}`)))
       .child(self.button("full-scope-local", "Uncommitted", cx => self.changeComparison("uncommitted", null, cx), true, self.mode === "uncommitted" ? "secondary" : "quiet"))
-      .child(self.button("full-scope-last-commit", "Last commit", cx => self.changeComparison("last_commit", null, cx), Boolean(snapshot?.head), self.mode === "last_commit" ? "secondary" : "quiet"))
+      .child(self.button("full-scope-last-commit", "Last commit", cx => self.changeComparison("last_commit", null, cx), !snapshot || Boolean(snapshot.head), self.mode === "last_commit" ? "secondary" : "quiet"))
       .child(self.button("full-scope-branch", "Branch", cx => self.changeComparison("branch", self.base, cx), true, self.mode === "branch" ? "secondary" : "quiet"))
-      .child(self.button("full-base", self.baseLabel(), cx => { self.baseOpen = !self.baseOpen; cx.notify(); }))
+      .child(self.button("full-base", self.baseLabel(), cx => self.openBasePicker(cx)))
       .child(self.button("full-updates", "Updates", cx => { self.updates.save({ open: !self.updates.state.open }); self.updates.check(cx); cx.notify(); }))
       .child(self.button("full-refresh", self.busy ? "Updating…" : "↻ Refresh", cx => { self.refresh(cx, true); self.refreshGithub(cx, true); })))
-    .when(self.baseOpen, el => el.child(v_flex().h(130).overflow_y_scrollbar()
-      .child(self.button("full-base-auto", "Auto · prefer local develop", cx => self.changeComparison("branch", null, cx, false)))
-      .children(self.bases.map(base => self.button(`full-base-${base}`, base, cx => self.changeComparison("branch", base, cx, true))))))
+    .when(self.baseOpen, el => el.child(self.basePicker()))
     .child(self.updatePanel())
     .when(Boolean(self.error), el => el.child(self.errorCard(t)))
     .when(Boolean(self.notice && !self.error), el => el.child(div().px(16).py(8).text_size(12).text_color(t.muted).child(self.notice)))
@@ -237,7 +237,7 @@ export function renderFull(self, cx) {
       .child(resizable_panel().size(self.fullWidths[0]).size_range(160, 500).visible(self.filesOpen)
         .child(v_flex().relative().size_full().min_h(0).bg(t.chrome)
           .child(v_virtual_list("full-files", files.length, 42, index => files[index].path,
-            range => files.slice(range.start, range.end).map(f => self.fileRow(f, counts.get(f.path) ?? 0, t)))
+            range => files.slice(range.start, range.end).map(f => self.fileRow(f, counts.get(f.path) ?? 0, t, draftPaths.has(f.path))))
             .size_full().on_item_click((path, cx) => self.selectFile(path, cx)))
           .child(Scrollbar.vertical("full-files").absolute().inset_0())))
       .child(resizable_panel().size(self.fullWidths[1]).size_range(300).child(main))
@@ -249,7 +249,7 @@ export function renderFull(self, cx) {
     .child(h_flex().h(60).flex_none().px(16).gap(12).items_center().bg(t.chrome).border_t(1).border_color(t.border)
       .child(v_flex().flex_1().min_w(0).gap(3)
         .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${target.address} · ${target.status}` : "Source chat unavailable · sending disabled"))
-        .child(div().text_size(11).text_color(t.dim).child(self.snapshotError ? `${snapshot ? "Cached review · " : ""}Refresh must succeed before saving or sending.` : hasDraft ? "Save or cancel your draft before sending." : `${pending.length} local comments · ${self.threadQueue.size} GitHub threads ready`)))
+        .child(div().text_size(11).text_color(t.dim).child(self.snapshotError ? `${snapshot ? "Cached review · " : ""}Refresh must succeed before saving or sending.` : reviewDrafts ? "Save or cancel unfinished comments in this comparison before sending." : `${pending.length} local comments · ${self.threadQueue.size} GitHub threads ready`)))
       .child(self.button("full-export", "Export…", cx => self.act("export", { threads: [...self.threadQueue.values()] }, cx), batch > 0))
-      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !hasDraft, "primary")));
+      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !reviewDrafts, "primary")));
 }

@@ -103,6 +103,15 @@ source bounds. Send only to the idle source chat. Persist content-keyed private
 uncertain/confirmed receipts before/after delivery; explicit checked retries
 must keep the original text and target. Cap messages at 64 KiB.
 
+File/comparison navigation never blocks on an unfinished comment. Stash and
+restore text, source side/range, revision and context per checkout/comparison/
+file. Keep editor/question drafts with that navigation key too. Changed code
+requires reselection; navigation never saves, sends or silently re-anchors.
+Opening full review keeps an unfinished source draft and explains where it is.
+The branch picker accepts typed refs (develop/origin/develop) with Enter or
+Compare. Last commit remains selectable after a failed Branch snapshot; only a
+known unborn HEAD disables it. Delivery guards still reject unsaved comments.
+
 Commands annotator.submit/ask/scope/refresh/full use nextCommand and existing
 guards, with no global key changes. One-shot shared annotator.open accepts
 {id,at,path,on}; refresh and select only a matching checkout/machine, keep drafts

@@ -17,7 +17,8 @@ diffs, syntax colors, resizable panes, and expandable context.
 
 Choose **Uncommitted**, **Last commit** (plus uncommitted work), or **Branch**
 (since merge-base, including committed and uncommitted changes). Pick a local
-base ref, or use Auto, which prefers local `develop`. No automatic fetch.
+base ref from the picker, or type one such as `develop` / `origin/develop` and
+press Enter. Auto prefers local `develop`. No automatic fetch.
 
 <img src="docs/images/scope-picker.png" alt="Changes sidebar with Uncommitted, Last commit, and Branch choices" width="440">
 
@@ -26,7 +27,8 @@ base ref, or use Auto, which prefers local `develop`. No automatic fetch.
 Click a line; Shift-click extends the range on the same diff side. Choose
 **Whole file** for a file note. Save with **⌘Enter / Ctrl+Enter** or the button.
 Add comments across files. Click an inline comment for **Copy**, **Edit**, or
-**Delete…** actions. Deletion asks for confirmation.
+**Delete…** actions. Deletion asks for confirmation. Unfinished comments stay
+with their file and comparison as you navigate; return to continue typing.
 
 ![Selected code and a comment ready to save](docs/images/comment.png)
 

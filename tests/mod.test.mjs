@@ -272,12 +272,103 @@ test("open-file API refreshes first, preserves drafts, and never consumes a newe
   h.mod.consumeOpenRequest(h.cx); assert.equal(h.state.shared["annotator.open"], null);
 });
 
-test("bindable commands cycle Last commit without sending and keep scope drafts guarded", async () => {
+test("bindable commands cycle Last commit without sending and preserve unfinished scope drafts", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain();
   h.mod.handleCommand("scope", h.cx); await h.drain();
   assert.equal(h.mod.mode, "last_commit"); assert.equal(h.requests.at(-1).scope.comparison.mode, "last_commit");
   h.mod.editor.set_value("Draft"); h.mod.handleCommand("scope", h.cx); await h.drain();
-  assert.equal(h.mod.mode, "last_commit"); assert.equal(h.requests.filter(r => r.op === "send").length, 0);
+  assert.equal(h.mod.mode, "branch");
+  assert.ok([...h.mod.navigationDrafts.values()].some(draft => draft.body === "Draft"));
+  assert.equal(h.requests.filter(r => r.op === "send").length, 0);
+});
+
+test("Last commit remains selectable when the initial Branch comparison fails", async () => {
+  const h = harness(); h.state.props = { presentation: "full" };
+  h.state.reply = async request => request.op === "snapshot" && request.scope.comparison.mode === "branch"
+    ? { code: 1, stdout: JSON.stringify({ ok: false, error: "Base 'develop' is not available locally" }) }
+    : { code: 0, stdout: JSON.stringify({ ok: true, data: h.snapshot() }) };
+  h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
+  assert.equal(h.mod.data, null);
+  const button = h.nodes.find(n => n.id === "full-scope-last-commit");
+  assert.equal(typeof button.events.on_click, "function", "a failed branch load cannot trap the comparison picker");
+  button.events.on_click(null, h.cx); await h.drain();
+  assert.equal(h.mod.mode, "last_commit"); assert.ok(h.mod.data); assert.equal(h.mod.snapshotError, null);
+});
+
+test("typed branch refs, including develop, submit an explicit comparison", async () => {
+  const h = harness(); h.state.props = { presentation: "full" };
+  h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
+  h.nodes.find(n => n.id === "full-base").events.on_click(null, h.cx); h.mod.render(h.cx);
+  assert.ok(h.nodes.some(n => n.id === "base-ref-input"));
+  h.mod.baseEditor.set_value("develop"); h.mod.baseEditor.emit("submit", {}); await h.drain();
+  assert.equal(h.requests.at(-1).scope.comparison.mode, "branch");
+  assert.equal(h.requests.at(-1).scope.comparison.base, "develop");
+  assert.equal(h.mod.baseExplicit, true);
+});
+
+test("typing does not block file or comparison navigation; each draft returns with its own anchor", async () => {
+  const h = harness();
+  h.state.reply = async request => {
+    const data = h.snapshot(), file = request.view?.file ?? "a.rs", mode = request.scope.comparison?.mode ?? "uncommitted";
+    data.snapshot.files.push({ ...data.snapshot.files[0], path: "b.rs" });
+    data.snapshot.revision = `${mode}-${file}`; data.snapshot.view = { file, context: 3 };
+    return { code: 0, stdout: JSON.stringify({ ok: true, data }) };
+  };
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.selectLine(h.mod.data.snapshot.files[0].rows[0], {}, h.cx); h.mod.editor.set_value("Draft A");
+  h.mod.selectFile("b.rs", h.cx); await h.drain();
+  assert.equal(h.mod.open, "b.rs"); assert.equal(h.mod.editor.value(), "");
+  h.mod.editor.set_value("Draft B"); h.mod.selectFile("a.rs", h.cx); await h.drain();
+  assert.equal(h.mod.editor.value(), "Draft A"); assert.equal(h.mod.selection.start, 2);
+  h.mod.changeComparison("last_commit", null, h.cx); await h.drain();
+  assert.equal(h.mod.mode, "last_commit"); assert.equal(h.mod.editor.value(), "");
+  h.mod.editor.set_value("Last commit draft"); h.mod.changeComparison("uncommitted", null, h.cx); await h.drain();
+  assert.equal(h.mod.editor.value(), "Draft A");
+  h.mod.changeComparison("last_commit", null, h.cx); await h.drain();
+  assert.equal(h.mod.editor.value(), "Last commit draft");
+  assert.equal(h.requests.filter(r => r.op === "add" || r.op === "send").length, 0);
+});
+
+test("a draft restored after code changes keeps its text and requires reselection before saving", async () => {
+  const h = harness();
+  h.state.reply = async request => {
+    const data = h.snapshot(); data.snapshot.files.push({ ...data.snapshot.files[0], path: "b.rs" });
+    data.snapshot.view = { file: request.view?.file ?? "a.rs", context: 3 };
+    return { code: 0, stdout: JSON.stringify({ ok: true, data }) };
+  };
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.selectLine(h.mod.data.snapshot.files[0].rows[0], {}, h.cx); h.mod.editor.set_value("Keep my original note");
+  h.mod.selectFile("b.rs", h.cx); await h.drain(); h.state.revision = "changed-code";
+  h.mod.selectFile("a.rs", h.cx); await h.drain();
+  assert.equal(h.mod.editor.value(), "Keep my original note"); assert.equal(h.mod.needsSelection, true);
+  h.mod.saveComment(h.cx); await h.drain(); assert.equal(h.requests.filter(r => r.op === "add").length, 0);
+});
+
+test("opening full review does not block or discard an unfinished source comment", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain(); h.mod.editor.set_value("Finish this later");
+  h.mod.openFull(h.cx); await h.drain();
+  const made = h.state.commands.find(command => command.name === "tab.new");
+  assert.equal(made.args.props.source_draft, true);
+  assert.equal(h.mod.editor.value(), "Finish this later");
+});
+
+test("a draft remains reachable when its file leaves the comparison", async () => {
+  const h = harness();
+  h.state.reply = async () => {
+    const data = h.snapshot(); data.snapshot.files.push({ ...data.snapshot.files[0], path: "b.rs" });
+    return { code: 0, stdout: JSON.stringify({ ok: true, data }) };
+  };
+  h.mod.init({}, h.cx); await h.drain(); h.mod.editor.set_value("Keep this draft");
+  h.mod.selectFile("b.rs", h.cx); await h.drain();
+  h.state.reply = async () => {
+    const data = h.snapshot(); data.snapshot.files[0].path = "b.rs"; data.snapshot.revision = "without-a";
+    return { code: 0, stdout: JSON.stringify({ ok: true, data }) };
+  };
+  h.mod.refresh(h.cx); await h.drain();
+  assert.equal(h.mod.reviewFiles().find(file => file.path === "a.rs").draftOnly, true);
+  h.mod.selectFile("a.rs", h.cx); await h.drain();
+  assert.equal(h.mod.editor.value(), "Keep this draft"); assert.equal(h.mod.canSaveComment(), false);
+  h.mod.cancelDraft(h.cx); assert.ok(!h.mod.reviewFiles().some(file => file.path === "a.rs"));
 });
 
 for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} hides resolved local notes and GitHub threads; toggle keeps history recoverable`, async () => {
@@ -532,7 +623,8 @@ test("late files and context changes request fresh lazy previews", async () => {
   assert.equal(h.requests.at(-1).view.context, 23);
   h.mod.editor.set_value("draft");
   h.mod.expandContext(1000000, h.cx); await h.drain();
-  assert.equal(h.mod.contextLines, 23);
+  assert.equal(h.mod.contextLines, 1000000);
+  assert.equal(h.mod.editor.value(), "draft");
 });
 
 test("Branch comparison and base are independent of Code and Comments tabs", async () => {

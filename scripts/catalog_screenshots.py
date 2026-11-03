@@ -12,7 +12,7 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--output", required=True, help="Directory for native README screenshots")
-parser.add_argument("--variant", choices=["full", "github", "sidebar", "scope", "comment", "sent", "ask", "updates"], help="Capture just one fixture")
+parser.add_argument("--variant", choices=["full", "github", "sidebar", "scope", "base", "comment", "sent", "ask", "updates"], help="Capture just one fixture")
 args = parser.parse_args()
 if not shutil.which("sips"):
     parser.error("This capture script requires macOS sips for cropping")
@@ -75,7 +75,7 @@ try:
     variants = [("full", "preview.png", 1440), ("github", "github-replies.png", 1280),
                 ("sidebar", "sidebar.png", 440), ("scope", "scope-picker.png", 440),
                 ("comment", "comment.png", 1440), ("sent", "sent.png", 1440), ("ask", "ask.png", 1440),
-                ("updates", "updates.png", 440)]
+                ("updates", "updates.png", 440), ("base", "base-picker.png", 440)]
     for variant, name, width in variants:
         if args.variant and variant != args.variant:
             continue
@@ -88,7 +88,7 @@ try:
         seed = "\n".join([
             "this.context = contextKey(); this.data = " + json.dumps(data) + ";",
             "this.github = " + json.dumps(github) + ";",
-            "this.full = " + json.dumps(variant not in {"sidebar", "scope", "updates"}) + "; this.view = " + json.dumps("github" if variant == "github" else "diff") + ";",
+            "this.full = " + json.dumps(variant not in {"sidebar", "scope", "updates", "base"}) + "; this.view = " + json.dumps("github" if variant == "github" else "diff") + ";",
             "this.open = 'src/payments/fees.ts'; this.mode = 'branch'; this.base = 'main'; this.baseExplicit = true;",
             "this.filesOpen = true; this.commentsOpen = false; this.onlyUnread = false; this.diffStyle = 'split'; this.syntax = true;",
             "this.fullWidths = [230,1050]; this.sizes = [190,420,190]; this.prepareSyntax(this.data.snapshot);",
@@ -103,6 +103,8 @@ try:
             seed += "\nthis.beginGithubReply(this.github.threads[0], cx); [...this.githubDrafts.values()][0].editor.set_value('Added the one-cent case and capped the maximum fee. The updated tests cover both boundaries.');"
         elif variant == "scope":
             seed += "\nthis.scopeMenuOpen = true;"
+        elif variant == "base":
+            seed += "\nthis.openBasePicker(cx); this.baseEditor.set_value('develop');"
         elif variant == "comment":
             seed += "\nthis.draft.anchor({side:'new',start:6,end:7,origin:6}, 'demo-v1'); this.editor.set_value('Please test the smallest payment and the maximum fee cap.');"
         elif variant == "sent":
