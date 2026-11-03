@@ -243,6 +243,46 @@ Reading never resolves a comment, marks it delivered, or excludes it from Send.
 GitHub read markers apply to an exact thread version; new replies become unread.
 No read action writes to GitHub. New comments and older stores start unread.
 
+## Updates
+
+The updater checks `jakub-tucek/herdr-annotator`'s latest stable GitHub release
+once per day while Annotator is loaded. Checks use the public GitHub API and
+do not send repository paths, code, comments, or credentials. A failed check
+keeps the last offer and backs off for a day; **Check now** retries on demand.
+
+Open **Updates** in full review, **↑** in the sidebar, or run
+`annotator.updates`. The prompt shows installed/available versions, a link to
+release notes, **Update**, and **Later**. Later hides the prompt for 24 hours.
+Only **Update** fetches code or starts a build. There is no silent install.
+
+Save/cancel drafts in all review views, including hidden tabs and checkout
+drafts, and wait for sends/posts to finish. The in-memory view registry does
+not expire hidden drafts. During an update, review views replace their editors
+with a progress screen. A detached Python worker survives Herdr's command
+timeout and an app restart; the first reopened view checks its durable status
+before accepting new drafts.
+
+The worker verifies installed-file hashes, refuses linked/tampered mods and
+dirty source trees, fetches the official release tag over HTTPS, checks its
+commit against the SHA from the update check, and fast-forwards only. It does
+not reset, stash, discard, or merge local commits. The release's mod version
+must match its `vMAJOR.MINOR.PATCH` tag. The installer checks that the source
+stays clean at the pinned commit through the build and native checks.
+
+The installer updates an existing private tabs mod without rewriting your
+layouts. It records version/commit and file hashes in
+`~/.local/share/herdr-annotator/install.json`; backups live under `backups/` in
+that directory. Update status/logs are `update-job.json` and `update.log`.
+Builds still require Git, Rust, Python 3, and `herdr-app` on PATH. No automatic
+rollback runs after an error. If installation fails after a fast-forward, the
+source clone may already be at the release; fix the reported issue and rerun
+the installer. Review state lives outside that clone and stays intact.
+
+Installs from before version 0.2.0 need one manual installer run to bootstrap
+the updater. Save drafts before that run. Daily prompts require a published
+stable GitHub release; tags alone and commits on `main` do not trigger them.
+See [publishing a release](releases.md) for the maintainer checklist.
+
 ## Commands and open-file API
 
 These commands target a loaded Annotator view. They obey the same draft,
@@ -255,6 +295,7 @@ snapshot, recipient, and idle-agent checks as the buttons:
 | `annotator.scope` | Cycle Uncommitted → Last commit → Branch |
 | `annotator.refresh` | Refresh the diff and GitHub threads |
 | `annotator.full` | Open a pinned full-review tab |
+| `annotator.updates` | Open update status and check for a release |
 
 No shortcuts are installed globally. Add your preferred keys under `global` in
 Herdr's `keys.json`, for example:

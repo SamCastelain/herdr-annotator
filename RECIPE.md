@@ -106,6 +106,22 @@ guards, with no global key changes. One-shot shared annotator.open accepts
 {id,at,path,on}; refresh and select only a matching checkout/machine, keep drafts
 and scope, expire after 30 seconds, and never clear a newer request.
 
+Check published stable GitHub releases daily, using public API metadata only;
+show version, release notes, Update and Later. No code fetch/build without an
+explicit click. annotator.updates opens manual status/checks. Bootstrap existing
+installs with one manual installer run. Keep package/mod versions aligned.
+Use an application-session view registry: hidden drafts and in-flight operations
+block Update, without heartbeat expiry. Pause editors globally during install.
+Probe the durable worker status on app restart before accepting new drafts.
+A detached Python worker holds a file lock through install, verifies receipts,
+refuses dirty/diverged source and locally modified installs, fetches the fixed
+official HTTPS upstream/tag, verifies its pinned SHA and version, fast-forwards
+only, then runs the installer with --expected-commit. Never reset/stash/discard.
+Check source cleanliness before and after the build; back up replaced files.
+Keep layouts intact during automatic installation and update private tabs from
+their receipt. Persist version/commit/binary/updater hashes. Builds need the
+existing Rust/Python/Git toolchain; no global keys or background daemon install.
+
 Auto branch base prefers local develop before origin/HEAD. Named base selections
 are pinned; Auto clears the pin. Reset legacy origin/develop defaults to Auto,
 preserve custom saved refs, and keep notes isolated by resolved comparison/base.

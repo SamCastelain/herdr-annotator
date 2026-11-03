@@ -12,6 +12,7 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--output", required=True, help="Directory for native README screenshots")
+parser.add_argument("--variant", choices=["full", "github", "sidebar", "scope", "comment", "sent", "ask", "updates"], help="Capture just one fixture")
 args = parser.parse_args()
 if not shutil.which("sips"):
     parser.error("This capture script requires macOS sips for cropping")
@@ -66,14 +67,19 @@ fixed = {"scope": scope, "space": "catalog-demo", "tab": "catalog-demo"}
 base = base.replace("function location() {", "function location() { return " + json.dumps(fixed) + ";", 1)
 base = re.sub(r"^    cx\.timer\.every\(.*\n", "", base, flags=re.MULTILINE)
 base = base.replace("this.syncSidebar();", "")
+base = base.replace("this.publishUpdateState(); this.updates.init(cx);",
+                    "this.updates = { running:false, state:{}, publish:()=>{}, close:()=>{}, check:()=>{}, save:()=>{}, start:()=>{}, blockers:()=>false }; /* SCREENSHOT_INIT */")
 base = base.replace("setShared(", "screenshotSetShared(") + "\nfunction screenshotSetShared() {}\n"
 
 try:
     variants = [("full", "preview.png", 1440), ("github", "github-replies.png", 1280),
                 ("sidebar", "sidebar.png", 440), ("scope", "scope-picker.png", 440),
-                ("comment", "comment.png", 1440), ("sent", "sent.png", 1440), ("ask", "ask.png", 1440)]
+                ("comment", "comment.png", 1440), ("sent", "sent.png", 1440), ("ask", "ask.png", 1440),
+                ("updates", "updates.png", 440)]
     for variant, name, width in variants:
-        driver = Path(tempfile.mkdtemp(prefix=f"annotator-catalog-{variant}-", dir=app_home / "mods"))
+        if args.variant and variant != args.variant:
+            continue
+        driver = Path(tempfile.mkdtemp(prefix=f".annotator-demo-{variant}-", dir=app_home / "mods"))
         drivers.append(driver)
         for item in source.glob("*.js"):
             if item.name != "main.js":
@@ -82,7 +88,7 @@ try:
         seed = "\n".join([
             "this.context = contextKey(); this.data = " + json.dumps(data) + ";",
             "this.github = " + json.dumps(github) + ";",
-            "this.full = " + json.dumps(variant not in {"sidebar", "scope"}) + "; this.view = " + json.dumps("github" if variant == "github" else "diff") + ";",
+            "this.full = " + json.dumps(variant not in {"sidebar", "scope", "updates"}) + "; this.view = " + json.dumps("github" if variant == "github" else "diff") + ";",
             "this.open = 'src/payments/fees.ts'; this.mode = 'branch'; this.base = 'main'; this.baseExplicit = true;",
             "this.filesOpen = true; this.commentsOpen = false; this.onlyUnread = false; this.diffStyle = 'split'; this.syntax = true;",
             "this.fullWidths = [230,1050]; this.sizes = [190,420,190]; this.prepareSyntax(this.data.snapshot);",
@@ -103,9 +109,15 @@ try:
             seed += "\nthis.data.comments = this.data.comments.map(c => ({...c, delivery:'sent'})); this.notice = 'Feedback submitted to the source session. Sent comments are saved under Show sent/resolved.';"
         elif variant == "ask":
             seed += "\nthis.beginQuestion({kind:'selection',selection:{side:'new',start:6,end:7}}, cx); this.questionDraft.editor.set_value('Why do we round up here, rather than use Math.round?');"
+        elif variant == "updates":
+            seed += "\nthis.updates.state = {open:true,current:'0.2.0',latest:{tag:'v0.3.0',url:'https://github.com/jakub-tucek/herdr-annotator/releases'}};"
         (driver / "mod.json").write_text(json.dumps({"place": "none", "overlay": {"width": width, "height": 800}}))
-        (driver / "main.js").write_text(base.replace("this.refresh(cx);", seed, 1))
+        (driver / "main.js").write_text(base.replace("/* SCREENSHOT_INIT */", seed, 1))
         subprocess.run(["herdr-app", "check", str(driver)], check=True)
+        published = driver.with_name(driver.name.lstrip("."))
+        os.replace(driver, published)  # Discover only a complete, checked mod.
+        driver = published
+        drivers[-1] = driver
         time.sleep(1.5)  # Let Herdr discover this fresh mod before opening it.
         subprocess.run(["herdr-app", "do", "mod.open", json.dumps({"name": driver.name})], check=True)
         def shown():

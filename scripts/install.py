@@ -12,19 +12,34 @@ import tempfile
 from tabs_integration import integrated_tabs
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--layout", help="Optional personal layout whose Changes panel should use this mod")
+parser.add_argument("--layout", action="append", default=[], help="Personal layout whose Changes panel should use this mod; repeat for multiple layouts")
+parser.add_argument("--expected-commit", help=argparse.SUPPRESS)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 home = Path.home()
-app_home = Path(os.environ.get("HERDR_APP_HOME", home / ".config/herdr-app"))
+app_home = Path(os.environ.get("HERDR_APP_HOME", home / ".config/herdr-app")).expanduser().resolve()
 mod = app_home / "mods/annotator"
 binary = home / ".local/bin/herdr-annotator"
 receipt = home / ".local/share/herdr-annotator/install.json"
+updater = receipt.parent / "update.py"
 installed = json.loads(receipt.read_text()) if receipt.exists() else {}
 files = ["mod.json", "review.js", "main.js", "full.js", "syntax.js", "draft.js", "github-refresh.js"]
+files.append("updates.js")
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+if updater.exists() and (not installed.get("updater_digest") or digest(updater) != installed["updater_digest"]):
+    parser.error(f"Installed updater changed locally or has no receipt: {updater}")
+version = json.loads((root / "mods/annotator/mod.json").read_text())["version"]
+commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+def check_release_source():
+    if args.expected_commit:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+        if head != args.expected_commit or dirty:
+            parser.error("Release checkout changed during the update; no installed files were replaced")
+check_release_source()
 layout = None
+layouts = []
 tabs_mod = app_home / "mods/annotator-tabs"
 tabs_files = None
 if mod.is_symlink():
@@ -41,10 +56,12 @@ elif mod.exists():
 if binary.exists():
     if installed.get("repo") != str(root):
         parser.error(f"Existing binary has no matching install receipt: {binary}")
-if args.layout:
-    if args.layout in {"main", "terminals", "win98"} or Path(args.layout).name != args.layout:
+    if installed.get("binary_digest") and digest(binary) != installed["binary_digest"]:
+        parser.error(f"Installed helper changed locally; preserve/reconcile it first: {binary}")
+for layout_name in dict.fromkeys(args.layout):
+    if layout_name in {"main", "terminals", "win98"} or Path(layout_name).name != layout_name:
         parser.error("Choose a personal layout name, not a shipped layout or a path")
-    layout = app_home / "layouts" / f"{args.layout}.json"
+    layout = app_home / "layouts" / f"{layout_name}.json"
     if not layout.is_file():
         parser.error(f"Personal layout does not exist: {layout}")
     tree = json.loads(layout.read_text())
@@ -68,6 +85,8 @@ if args.layout:
         return count
     if not replace_tabs(tree):
         parser.error("No supported tabs mod found in this layout")
+    layouts.append((layout, tree))
+if layouts or installed.get("tabs_files"):
     try:
         tabs_source = integrated_tabs((app_home / "mods/tabs/main.js").read_text())
     except (OSError, ValueError) as error:
@@ -86,14 +105,19 @@ if args.layout:
         subprocess.run(["herdr-app", "check", stage], check=True)
 subprocess.run(["cargo", "build", "--release", "--locked"], cwd=root, check=True)
 subprocess.run(["herdr-app", "check", str(root / "mods/annotator")], check=True)
+check_release_source()
 stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 backups = home / ".local/share/herdr-annotator/backups" / stamp
 if binary.exists() or layout or mod.exists():
     backups.mkdir(parents=True)
     if binary.exists():
         shutil.copy2(binary, backups / "herdr-annotator")
-    if layout:
-        shutil.copy2(layout, backups / layout.name)
+    if updater.exists():
+        shutil.copy2(updater, backups / "update.py")
+    if receipt.exists():
+        shutil.copy2(receipt, backups / "install.json")
+    for layout_path, _ in layouts:
+        shutil.copy2(layout_path, backups / layout_path.name)
     if mod.is_symlink():
         (backups / "annotator-link-target.txt").write_text(str(mod.readlink()) + "\n")
     elif mod.exists():
@@ -126,15 +150,22 @@ if tabs_files:
         temp.write_text(content)
         os.replace(temp, tabs_mod / name)
     installed["tabs_files"] = {name: digest(tabs_mod / name) for name in tabs_files}
-receipt.write_text(json.dumps({"repo": str(root), "binary": str(binary), "mod": str(mod),
+updater_temp = updater.with_name(f".update-{stamp}.py")
+shutil.copy2(root / "scripts/update.py", updater_temp)
+os.replace(updater_temp, updater)
+receipt_temp = receipt.with_name(f".install-{stamp}.json")
+receipt_temp.write_text(json.dumps({"repo": str(root), "binary": str(binary), "mod": str(mod), "app_home": str(app_home),
+                              "version": version, "commit": commit, "binary_digest": digest(binary), "updater_digest": digest(updater),
+                              "layouts": sorted(set(installed.get("layouts", [])) | set(args.layout)),
                               "files": {name: digest(mod / name) for name in files},
                               **({"tabs_files": installed["tabs_files"]} if installed.get("tabs_files") else {})}, indent=2) + "\n")
-if layout:
-    temp = layout.with_name(f".{layout.name}-{stamp}")
+os.replace(receipt_temp, receipt)
+for layout_path, tree in layouts:
+    temp = layout_path.with_name(f".{layout_path.name}-{stamp}")
     temp.write_text(json.dumps(tree, indent=2) + "\n")
-    os.replace(temp, layout)
+    os.replace(temp, layout_path)
 print(f"Installed {binary}\nInstalled mod copy at {mod}")
-if layout:
-    print(f"Updated {layout}; backup in {backups}")
+if layouts:
+    print(f"Updated {', '.join(str(path) for path, _ in layouts)}; backup in {backups}")
 else:
     print("No layout changed. Existing Annotator panels reload; use ↗ in Changes to open a full review tab.")

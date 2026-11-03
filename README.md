@@ -115,9 +115,34 @@ before retrying uncertain delivery. Diff preview limits still apply.
 ## Commands and integrations
 
 Bind `annotator.submit`, `annotator.ask`, `annotator.scope`, `annotator.refresh`,
-or `annotator.full` in Herdr's `keys.json`. No global keys change during install.
-Other mods can request a file's diff through `setShared("annotator.open", …)`.
-See the [command and open-file API reference](docs/guide.md#commands-and-open-file-api).
+`annotator.full`, or `annotator.updates` in Herdr's `keys.json`. No global keys
+change during install. Other mods can request a file's diff through
+`setShared("annotator.open", …)`. See the
+[command and open-file API reference](docs/guide.md#commands-and-open-file-api).
+
+## Updates
+
+Annotator checks GitHub for a stable tagged release once a day. **Update
+available** shows the new version with **Release notes**, **Update**, and
+**Later**. Open **Updates** in full review, or **↑** in the sidebar, to check
+manually. Downloads/builds begin only after you click **Update**.
+
+Save or cancel drafts in all review tabs first. The updater pauses review
+editors during installation, fast-forwards the original clone to the checked
+release commit, rebuilds the helper, and hot-reloads the mods. It backs up the
+old install and refuses dirty/diverged checkouts or locally edited installed
+files. Your personal layouts and saved comments stay in place.
+
+Existing installs need one manual reinstall to gain this mechanism:
+
+```sh
+git pull --ff-only
+python3 scripts/install.py --layout my-review
+```
+
+Use your own layout name, or omit `--layout` for a standalone install. Update
+prompts follow published GitHub releases, not each commit on `main`.
+
 
 ## Development
 

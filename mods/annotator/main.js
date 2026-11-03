@@ -7,6 +7,7 @@ import { highlightDiff } from "./syntax.js";
 import { DraftLifecycle } from "./draft.js";
 import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
+import { UpdateController } from "./updates.js";
 
 function location() {
   const fixed = props();
@@ -40,12 +41,16 @@ export default class Annotator extends View {
     this.view = ["comments", "github"].includes(props()?.view) ? props().view : "diff"; this.filesOpen = this.full ? preferences.filesOpen : true;
     this.editor = TextareaState.new({ placeholder: "What should change? Ask a question or leave feedback…", rows: 3 });
     this.draft = new DraftLifecycle(this.editor);
-    this.editor.on("change", (_e, cx) => cx.notify());
+    this.editor.on("change", (_e, cx) => { this.publishUpdateState(); cx.notify(); });
     this.editor.on("focus", () => { this.editorFocused = true; });
     this.editor.on("blur", () => { this.editorFocused = false; });
     this.editor.on("submit", (event, cx) => { if (event.secondary && !event.shift) this.saveComment(cx); });
     this.output = TextareaState.new({ placeholder: "Exported review", rows: 6 });
     this.handle = cx.focus_handle();
+    this.updates = new UpdateController({ exec, shared, setShared, storage: sessionStorage,
+      script: `${home()}/.local/share/herdr-annotator/update.py`, appHome: appHome(),
+      ready: cx => { if (!this.closed && !this.data && !this._busy) this.refresh(cx); } });
+    this.publishUpdateState(); this.updates.init(cx);
     this.refresh(cx);
     cx.timer.every(15000, cx => { if (!this.editor.value().trim()) this.refresh(cx); });
     cx.timer.every(300000, cx => this.refreshGithub(cx));
@@ -64,6 +69,44 @@ export default class Annotator extends View {
   }
 
   helper() { return props()?.helper ?? `${home()}/.local/bin/herdr-annotator`; }
+
+  get busy() { return Boolean(this._busy || this.updates?.running); }
+  set busy(value) { this._busy = value; this.publishUpdateState(); }
+
+  publishUpdateState() {
+    if (!this.updates) return;
+    if (this.closed) { if (!this._busy) this.updates.close(); return; }
+    const savedDraft = [...(this.draft?.saved.values() ?? [])].some(draft => draft.body?.trim());
+    const blocked = Boolean(this._busy || this.editor?.value().trim() || savedDraft
+      || this.edits?.size || this.questions?.size || this.githubDrafts?.size);
+    this.updates.publish(blocked);
+  }
+
+  close() { this.closed = true; this.updates?.close(Boolean(this._busy)); }
+
+  updatePanel() {
+    const update = this.updates, state = update.state, release = state.latest;
+    if (!state.open && (!release || (state.dismissedUntil ?? 0) > Date.now())) return div().h(0);
+    const t = theme();
+    return v_flex().id("annotator-update-panel").px(12).py(8).gap(5).flex_none().bg(t.raised).text_size(12)
+      .child(div().font_semibold().child(release ? `Update ${release.tag} available · installed ${state.current}` : `Annotator ${state.current ?? ""}`))
+      .when(Boolean(state.error), el => el.child(div().text_size(11).text_color(t.ansi3).child(state.error)))
+      .child(h_flex().gap(5).flex_wrap()
+        .when(Boolean(release), el => el
+          .child(this.button("update-release-notes", "Release notes", cx => cx.open_url(release.url)))
+          .child(this.button("update-install", "Update", cx => { this.publishUpdateState(); this.handle.focus?.(); update.start(cx); }, !update.blockers(), "primary")))
+        .child(this.button("update-check", update.checking ? "Checking…" : "Check now", cx => update.check(cx, true), !update.checking))
+        .child(this.button("update-later", "Later", cx => update.dismiss(cx))))
+      .when(update.blockers(), el => el.child(div().text_size(11).text_color(t.muted).child("Save/cancel drafts in all review views and wait for operations to finish before updating.")));
+  }
+
+  updateScreen() {
+    const state = this.updates.state, t = theme();
+    return v_flex().id("annotator-updating").size_full().p(18).gap(10).bg(t.background).text_color(t.foreground).track_focus(this.handle)
+      .child(div().font_semibold().child(state.job?.phase === "checking" ? "Checking installation…" : `Updating Annotator${state.job?.tag ? ` to ${state.job.tag}` : ""}…`))
+      .child(div().text_size(12).child("Building and installing in the background. Review editors are paused; terminals remain available."))
+      .when(Boolean(state.error), el => el.child(div().text_size(11).text_color(t.ansi3).child(state.error)));
+  }
 
   get selection() { return this.draft.selection; }
   set selection(value) { this.draft.selection = value; }
@@ -98,7 +141,7 @@ export default class Annotator extends View {
   }
 
   cancelDraft(cx) {
-    this.draft.cancel(this.context); this.notice = null; cx.notify();
+    this.draft.cancel(this.context); this.notice = null; this.publishUpdateState(); cx.notify();
   }
 
   fullSettings() {
@@ -136,9 +179,10 @@ export default class Annotator extends View {
     if (this.busy || this.snapshotError || contextKey() !== this.context || comment.delivery || comment.resolved) return;
     if (this.hasDraft()) { this.notice = "Save or cancel your draft before editing a comment."; cx.notify(); return; }
     const editor = TextareaState.new({ value: comment.body, rows: 3 });
-    editor.set_value(comment.body); editor.on("change", (_event, cx) => cx.notify());
+    editor.set_value(comment.body); editor.on("change", (_event, cx) => { this.publishUpdateState(); cx.notify(); });
     editor.on("submit", (event, cx) => { if (event.secondary && !event.shift) this.saveEdit(cx); });
     this.edits.set(this.context, { id: comment.id, expected_body: comment.body, editor });
+    this.publishUpdateState();
     this.activeComment = comment.id; this.activeCommentIds = null; this.view = this.full ? this.view : "comments"; editor.focus(); cx.notify();
   }
 
@@ -154,11 +198,12 @@ export default class Annotator extends View {
     const file = this.data.snapshot.files.find(f => f.path === this.open);
     if (!file?.loaded || file.truncated) { this.notice = "Load a complete preview before asking about this diff."; cx.notify(); return; }
     const editor = TextareaState.new({ placeholder: "What do you want to ask about this code?", rows: 3 });
-    editor.on("change", (_event, cx) => cx.notify());
+    editor.on("change", (_event, cx) => { this.publishUpdateState(); cx.notify(); });
     editor.on("submit", (event, cx) => { if (event.secondary && !event.shift) this.sendQuestion(cx); });
     this.questions.set(this.context, { id: this.githubReplyId(), path: file.path, context,
       revision: this.data.snapshot.revision, scope: this.data.snapshot.scope,
       view: this.data.snapshot.view ?? { file: file.path, context: this.contextLines }, editor, status: null });
+    this.publishUpdateState();
     this.notice = null; editor.focus(); cx.notify();
   }
 
@@ -216,6 +261,7 @@ export default class Annotator extends View {
       this.changeComparison(modes[(modes.indexOf(this.mode) + 1) % modes.length], this.base, cx);
     } else if (command === "refresh") { this.refresh(cx, true); this.refreshGithub(cx, true); }
     else if (command === "full") this.openFull(cx);
+    else if (command === "updates") { this.updates.save({ open: true }); this.updates.check(cx); }
     cx.notify();
   }
 
@@ -268,6 +314,7 @@ export default class Annotator extends View {
   }
 
   async request(request) {
+    if (this.updates?.running) throw new Error("Update in progress; review operations are paused");
     // This is always local. The Rust engine uses hc to read remote repos.
     const result = await exec(this.helper(), ["request", JSON.stringify(request)]);
     let response;
@@ -293,7 +340,9 @@ export default class Annotator extends View {
       .child(h_flex().h(40).px(12).gap(8).items_center().flex_none().bg(t.chrome)
         .child(div().font_semibold().text_size(14).child(this.full ? "Review" : "Changes"))
         .child(div().flex_1())
+        .child(this.button("empty-updates", "Updates", cx => { this.updates.save({ open: !this.updates.state.open }); this.updates.check(cx); cx.notify(); }))
         .child(this.button("empty-refresh", this.busy ? "Checking…" : "↻ Refresh", cx => this.refresh(cx, true))))
+      .child(this.updatePanel())
       .child(v_flex().flex_1().min_h(0).p(20).gap(10).justify_center()
         .child(div().font_semibold().text_size(14).child(scope.repo ? "Not a Git checkout" : "Select a Git checkout"))
         .child(div().text_size(12).text_color(t.muted).child("Open a folder with a Git repository to review its changes."))
@@ -515,9 +564,10 @@ export default class Annotator extends View {
     let draft = this.githubDrafts.get(key);
     if (!draft) {
       const editor = TextareaState.new({ placeholder: "Reply to this GitHub thread…", rows: 3 });
-      editor.on("change", (_event, cx) => cx.notify());
+      editor.on("change", (_event, cx) => { this.publishUpdateState(); cx.notify(); });
       draft = { editor, id: this.githubReplyId(), status: null, error: null };
       this.githubDrafts.set(key, draft);
+      this.publishUpdateState();
     }
     // Clicking Reply explicitly accepts the currently displayed thread version.
     draft.thread = { id: thread.id, fingerprint: thread.fingerprint };
@@ -591,7 +641,7 @@ export default class Annotator extends View {
         .text_color(active ? t.accent_foreground : t.dim).font_semibold())
       .when(variant === "secondary", el => el.bg(t.surface).border_1().border_color(t.border))
       .when(active, el => el.cursor_pointer().hover(s => variant === "primary" ? s.opacity(0.85) : s.bg(t.hover))
-        .on_click((_e, cx) => action(cx))).child(text);
+        .on_click((_e, cx) => { action(cx); this.publishUpdateState(); })).child(text);
   }
 
   badge(text, color, background = null) {
@@ -710,6 +760,8 @@ export default class Annotator extends View {
   }
 
   render(cx) {
+    this.publishUpdateState();
+    if (this.updates?.running) return this.updateScreen();
     this.syncSidebar();
     if (contextKey() !== this.context && !this.busy) this.refresh(cx);
     this.consumeOpenRequest(cx);
@@ -752,7 +804,9 @@ export default class Annotator extends View {
           .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
             .child(`${data?.snapshot.scope.machine ? data.snapshot.scope.machine + " · " : ""}${data?.snapshot.branch ?? ""}`))
           .child(this.button("open-full-review", "↗", cx => this.openFull(cx), Boolean(data)).tooltip("Open full review tab"))
+          .child(this.button("review-updates", "↑", cx => { this.updates.save({ open: !this.updates.state.open }); this.updates.check(cx); cx.notify(); }).tooltip("Annotator updates"))
           .child(this.button("review-refresh", this.busy ? "…" : "↻", cx => { this.refresh(cx, true); this.refreshGithub(cx, true); }).tooltip("Refresh diff and GitHub"))))
+      .child(this.updatePanel())
       .when(Boolean(this.error), el => el.child(this.errorCard(t)))
       .when(Boolean(this.notice), el => el.child(div().mx(8).my(4).p(8).rounded(6).bg(t.raised).text_size(11.5).text_color(t.muted).child(this.notice)))
       .child(h_flex().h(33).flex_none().px(6).gap(4).bg(t.chrome).border_b(1).border_color(t.border)

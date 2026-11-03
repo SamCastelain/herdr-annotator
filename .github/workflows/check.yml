@@ -18,4 +18,5 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: npm test
-      - run: python3 -m py_compile scripts/install.py
+      - run: python3 -m py_compile scripts/install.py scripts/update.py scripts/tabs_integration.py
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'

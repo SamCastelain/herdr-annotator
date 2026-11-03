@@ -6,6 +6,7 @@ import * as review from "../mods/annotator/review.js";
 import * as syntax from "../mods/annotator/syntax.js";
 import { DraftLifecycle } from "../mods/annotator/draft.js";
 import { GithubRefresh } from "../mods/annotator/github-refresh.js";
+import { UpdateController } from "../mods/annotator/updates.js";
 
 function harness() {
   const nodes = [], requests = [], jobs = [];
@@ -18,6 +19,7 @@ function harness() {
       if (key === "then") return undefined;
       return (...args) => {
         if (key === "id") data.id = args[0];
+        else if (key === "selectable") data.selectable = args[0];
         else if (key === "child") data.children.push(args[0]);
         else if (key === "children") data.children.push(...args[0]);
         else if (key === "when" && args[0]) args[1](proxy);
@@ -28,6 +30,7 @@ function harness() {
     nodes.push(data); return proxy;
   }
   function input(options) {
+    if (state.forbidNewInputs) throw new Error("Native input state cannot be created during render");
     let value = options.value ?? "";
     const events = {};
     return { value: () => value, set_value(v) { value = v; }, on(name, fn) { events[name] = fn; },
@@ -38,9 +41,12 @@ function harness() {
       files: [{ path: "a.rs", status: " M", rows: [{ kind: "add", old: null, new: 2, text: "changed" }], loaded: true, truncated: false }], limited: false },
     comments: [{ id: "note1", path: "a.rs", body: "Inline note", stale: false, resolved: false, delivery: null, position: { side: "new", start: 2, end: 2 } }],
   });
-  const cx = { notify() {}, stop_propagation() {}, focus_handle: () => ({}), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
+  const cx = { notify() {}, stop_propagation() {}, write_to_clipboard: text => { state.clipboard = text; }, focus_handle: () => ({}), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
+  const storage = new Map();
   const context = {
-    ...review, ...syntax, DraftLifecycle, GithubRefresh, View: class {}, div: node, h_flex: node, v_flex: node, v_resizable: node, h_resizable: node,
+    ...review, ...syntax, DraftLifecycle, GithubRefresh, UpdateController,
+    sessionStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    View: class {}, div: node, h_flex: node, v_flex: node, v_resizable: node, h_resizable: node,
     resizable_panel: () => { state.panelCalls = (state.panelCalls ?? 0) + 1; return node(); },
     shared: key => state.shared[key] ?? null, setShared: (key, value) => { state.saved = { key, value }; state.shared[key] = value; },
     layout: () => state.layout,
@@ -62,10 +68,14 @@ function harness() {
     },
     run: (name, args) => { state.commands.push({ name, args }); },
     TextareaState: { new: input }, Textarea: { new: node },
+    InputState: { new: input }, Input: { new: node },
+    InputState: { new: input }, Input: { new: node },
+    TextView: { html: (id, html) => { state.textViews ??= []; state.textViews.push({ id, html }); return node().id(id); } },
     props: () => ({ scope: state.scope, space: "space1", tab: state.tab, ...state.props }),
     theme: () => ({ dim: "#666666", ansi1: "#ff0000", ansi2: "#00ff00" }), settings: () => ({}),
     agents: () => state.agents, focused: () => state.focus,
     home: () => "/home/me", exec: async (_helper, args) => {
+      if (_helper === "python3") return { code: 0, stdout: JSON.stringify({ ok: true, data: { current: "0.2.0", latest: null, checked_at: Date.now() / 1000, job: {} } }) };
       if (_helper === "herdr-app") {
         state.commands.push({ name: args[1], args: JSON.parse(args[2]) });
         return { code: 0, stdout: JSON.stringify({ tab: "review-tab", pane: "review-pane" }) };
@@ -101,6 +111,24 @@ test("one click sends saved comments; rendering alone never sends", async () => 
   assert.equal(h.requests.filter(r => r.op === "send").length, 1);
   h.mod.render(h.cx);
   assert.ok(!h.nodes.some(n => n.id === "cancel-send"));
+});
+
+test("update protection tracks active and hidden drafts and unmounts editors during installation", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  assert.equal(h.mod.updates.blockers(), false);
+  h.mod.editor.set_value("keep this draft"); h.mod.editor.emit("change", {});
+  assert.equal(h.mod.updates.blockers(), true);
+  h.mod.cancelDraft(h.cx); assert.equal(h.mod.updates.blockers(), false);
+  h.mod.draft.saved.set("other-checkout", { body: "hidden draft" }); h.mod.publishUpdateState();
+  assert.equal(h.mod.updates.blockers(), true);
+  h.mod.draft.saved.clear(); h.mod.publishUpdateState();
+  h.mod.updates.gate(true);
+  const before = h.requests.length, start = h.nodes.length;
+  h.mod.render(h.cx); h.mod.sendToSession(h.cx); h.mod.refresh(h.cx);
+  assert.ok(h.nodes.slice(start).some(n => n.id === "annotator-updating"));
+  assert.ok(!h.nodes.slice(start).some(n => n.id === "save-note" || n.id === "send-review"));
+  await assert.rejects(() => h.mod.request({ op: "send" }), /Update in progress/);
+  assert.equal(h.requests.length, before);
 });
 
 test("inline edit saves only that note, preserves later edits, and blocks accidental batch send", async () => {
@@ -940,3 +968,4 @@ test("save shortcut requires composer focus; confirmed Send never redirects to a
   h.mod.sendToSession(h.cx); await h.drain();
   assert.equal(h.state.commands.length, 0);
 });
+
