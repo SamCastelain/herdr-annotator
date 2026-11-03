@@ -179,12 +179,13 @@ impl Engine {
                 revision,
                 threads,
                 include_local,
+                note,
                 ..
             } => {
                 snapshot.require_revision(&revision)?;
                 let cache = self.thread_cache(snapshot, &threads)?;
                 return Ok(
-                    json!({"text": review.feedback(&store.comments, include_local, cache.as_ref(), &threads)?}),
+                    json!({"text": review.feedback(&store.comments, include_local, cache.as_ref(), &threads, &note)?}),
                 );
             }
             Request::Send {
@@ -192,12 +193,18 @@ impl Engine {
                 target,
                 threads,
                 include_local,
+                note,
                 ..
             } => {
                 snapshot.require_revision(&revision)?;
                 let mut cache = self.thread_cache(snapshot, &threads)?;
-                let text =
-                    review.feedback(&store.comments, include_local, cache.as_ref(), &threads)?;
+                let text = review.feedback(
+                    &store.comments,
+                    include_local,
+                    cache.as_ref(),
+                    &threads,
+                    &note,
+                )?;
                 git::validate_target(&snapshot.scope, &target)?;
                 // Persist the intent first. A lost reply must never lead to an automatic duplicate send.
                 let ids: Vec<String> = review
@@ -286,7 +293,12 @@ fn combined_feedback(
     include_local: bool,
     cache: Option<&github::Cache>,
     threads: &[ThreadRef],
+    note: &str,
 ) -> Result<String> {
+    if note.len() > 16_384 {
+        return Err("General note must contain at most 16384 bytes".into());
+    }
+    let note = note.trim();
     let local = include_local
         && views(snapshot, comments)
             .iter()
@@ -305,7 +317,12 @@ fn combined_feedback(
     if let Some(cache) = cache {
         text.push_str(&cache.feedback(threads)?);
     }
-    if !local && threads.is_empty() {
+    if !note.is_empty() {
+        text.push_str("\n## General note\n\n");
+        text.push_str(note);
+        text.push('\n');
+    }
+    if !local && threads.is_empty() && note.is_empty() {
         return Err("No open, current, unsent comments to export".into());
     }
     if text.len() > 65_536 {

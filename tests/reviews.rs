@@ -72,6 +72,30 @@ impl Fixture {
 }
 
 #[test]
+fn general_note_exports_alone_or_after_comments_and_validates_size() {
+    let f = Fixture::new(true);
+    let s = f.snapshot();
+    let export = |note: &str| {
+        f.request(json!({"op":"export", "revision":s["snapshot"]["revision"], "note":note}))
+    };
+    let text = export("  Please keep this small.  ").unwrap();
+    assert!(
+        text["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("\n## General note\n\nPlease keep this small.\n")
+    );
+    assert!(export(" \n ").is_err());
+    assert!(export(&"x".repeat(16_385)).unwrap_err().contains("16384"));
+    f.change();
+    let added = f.add(Value::Null);
+    let text = f.request(json!({"op":"export", "revision":added["snapshot"]["revision"], "note":"Final direction"})).unwrap();
+    let text = text["text"].as_str().unwrap();
+    assert!(text.find("Please check this").unwrap() < text.find("## General note").unwrap());
+    assert!(text.ends_with("Final direction\n"));
+}
+
+#[test]
 fn automatic_branch_base_prefers_local_develop_over_stale_origin_and_remote_head() {
     let f = Fixture::new(true);
     git(

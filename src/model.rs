@@ -149,6 +149,8 @@ pub enum Request {
         scope: Scope,
         revision: String,
         #[serde(default)]
+        note: String,
+        #[serde(default)]
         threads: Vec<ThreadRef>,
         #[serde(default = "yes")]
         include_local: bool,
@@ -159,6 +161,8 @@ pub enum Request {
         scope: Scope,
         revision: String,
         target: String,
+        #[serde(default)]
+        note: String,
         #[serde(default)]
         threads: Vec<ThreadRef>,
         #[serde(default = "yes")]

@@ -24,6 +24,7 @@ export default class Annotator extends View {
     this.sessions = new Map(); this.exportText = null;
     this.edits = new Map(); this.questions = new Map();
     this.navigationDrafts = new Map(); this.navigationFiles = new Map();
+    this.reviewNotes = new Map();
     this.githubDrafts = new Map();
     this.full = props()?.presentation === "full"; this.onlyUnread = false;
     const preferences = this.fullSettings();
@@ -51,6 +52,8 @@ export default class Annotator extends View {
     this.editor.on("blur", () => { this.editorFocused = false; });
     this.editor.on("submit", (event, cx) => { if (event.secondary && !event.shift) this.saveComment(cx); });
     this.output = TextareaState.new({ placeholder: "Exported review", rows: 6 });
+    this.blankReviewNote = this.createReviewNote();
+    this.ensureReviewNote(contextKey());
     this.handle = cx.focus_handle();
     this.updates = new UpdateController({ exec, shared, setShared, storage: sessionStorage,
       script: `${home()}/.local/share/herdr-annotator/update.py`, appHome: appHome(),
@@ -107,6 +110,7 @@ export default class Annotator extends View {
     const savedDraft = [...(this.draft?.saved.entries() ?? [])].some(([key, draft]) => key !== this.context && draft.body?.trim())
       || [...this.navigationDrafts.values()].some(draft => draft.body?.trim());
     const blocked = Boolean(this._busy || this.editor?.value().trim() || savedDraft
+      || [...this.reviewNotes.values()].some(note => note.editor.value().trim())
       || this.edits?.size || this.questions?.size || this.githubDrafts?.size);
     this.updates.publish(blocked);
   }
@@ -502,6 +506,7 @@ export default class Annotator extends View {
     const context = this.context;
     this.busy = true;
     cx.spawn(async cx => {
+      this.ensureReviewNote(context);
       try {
         const data = await this.request({ op: "snapshot", scope: { ...current.scope, comparison: { mode: this.mode, base: this.baseExplicit ? this.base : null } }, view: { file: this.open, context: this.contextLines } });
         if (contextKey() !== context) return;
@@ -539,10 +544,15 @@ export default class Annotator extends View {
     const draftToken = op === "add" ? this.draft.capture(context) : null;
     const editToken = op === "edit" ? this.editDraft : null;
     const editKey = this.navigationKey();
+    const noteToken = ["send", "export"].includes(op) ? this.reviewNote : null;
+    if (op === "export") details = { note: noteToken.editor.value(), ...details };
     this.busy = true; this.error = null; this.notice = null;
     cx.spawn(async cx => {
       try {
         const data = await this.request({ op, scope: snapshot.scope, view: snapshot.view ?? { file: this.open, context: this.contextLines }, ...(["resolve", "read"].includes(op) ? {} : { revision: snapshot.revision }), ...details });
+        if (op === "send" && details.note && noteToken.editor.value() === details.note) {
+          noteToken.editor.set_value(""); noteToken.uncertain = false;
+        }
         if (editToken) {
           if (editToken.editor.value() === details.body) this.edits.delete(editKey);
           else editToken.expected_body = details.body.trim();
@@ -563,6 +573,7 @@ export default class Annotator extends View {
           if (agents().some(agent => agent.address === details.target)) run("pane.focus", { terminal: details.target });
         }
       } catch (e) {
+        if (op === "send" && details.note) noteToken.uncertain = true;
         if (contextKey() === context) this.error = String(e);
       }
       finally { this.busy = false; cx.notify(); }
@@ -583,14 +594,41 @@ export default class Annotator extends View {
   sendToSession(cx, thread = null) {
     if (this.busy || this.snapshotError || !this.data || contextKey() !== this.context || this.hasReviewDrafts()) return;
     const threads = thread ? [{ id: thread.id, fingerprint: thread.fingerprint }] : [...this.threadQueue.values()];
-    if (!thread && !pendingComments(this.data.comments).length && !threads.length) return;
+    const note = thread ? "" : this.reviewNote.editor.value();
+    if (!thread && this.reviewNote.uncertain) return;
+    if (!thread && !pendingComments(this.data.comments).length && !threads.length && !note.trim()) return;
     const target = this.currentSession();
     if (!target || target.status !== "idle") {
       this.notice = target ? `The open session is ${target.status}. Send when it is idle; permission prompts are never bypassed.`
         : "Focus the agent chat in this tab first. Reviews are never routed to another tab automatically.";
       cx.notify(); return;
     }
-    this.act("send", { target: target.address, threads, include_local: !thread }, cx);
+    this.act("send", { target: target.address, threads, include_local: !thread, note }, cx);
+  }
+
+  get reviewNote() {
+    return this.reviewNotes.get(this.context) ?? this.blankReviewNote;
+  }
+
+  createReviewNote() {
+    const editor = TextareaState.new({ placeholder: "General note (optional)…", rows: 2 });
+    editor.on("change", (_event, cx) => { this.publishUpdateState(); cx.notify(); });
+    return { editor, uncertain: false };
+  }
+
+  ensureReviewNote(context) {
+    if (!this.reviewNotes.has(context)) this.reviewNotes.set(context, this.createReviewNote());
+  }
+
+  reviewNoteComposer() {
+    if (!this.reviewNotes.has(this.context)) return div().h(0);
+    const note = this.reviewNote;
+    return v_flex().gap(4)
+      .child(div().text_size(11).text_color(theme().muted).child("General note · sent after review comments"))
+      .child(Textarea.new(note.editor).id("review-general-note").h(54).w_full())
+      .when(note.uncertain, el => el
+        .child(div().text_size(11).text_color(theme().ansi3).child("Delivery unconfirmed. Check the chat before sending this note again."))
+        .child(this.button("review-note-checked", "I checked chat · Allow sending again", cx => { note.uncertain = false; cx.notify(); })));
   }
 
   refreshGithub(cx, force = false) {
@@ -925,7 +963,7 @@ export default class Annotator extends View {
     const source = file ? pathParts(file.path) : null;
     const stats = file ? fileStats(file) : null;
     const chat = target?.program?.name ?? (target?.app === "opencode" ? "OpenCode" : target?.app) ?? "Agent";
-    const batchSize = pending.length + this.threadQueue.size;
+    const batchSize = pending.length + this.threadQueue.size + (this.reviewNote.editor.value().trim() ? 1 : 0);
     const sendLabel = batchSize ? `Send review · ${batchSize}` : "Send review";
     return v_flex().id("annotator-root").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((event, cx) => this.handleKey(event, cx))
@@ -1021,6 +1059,7 @@ export default class Annotator extends View {
         .child(div().text_size(11).text_color(t.muted).child("Review text · select and copy"))
         .child(Textarea.new(this.output).h(95).w_full()).child(this.button("close-export", "Close", cx => { this.exportText = null; cx.notify(); }))))
       .child(v_flex().flex_none().p(10).gap(6).bg(t.chrome).border_t(1).border_color(t.border)
+        .child(this.reviewNoteComposer())
         .child(h_flex().gap(7).items_center()
           .child(h_flex().size(27).rounded(7).bg(t.accent + "18").text_color(t.accent).items_center().justify_center().font_semibold().child("↗"))
           .child(v_flex().flex_1().min_w(0).gap(1)
@@ -1028,7 +1067,7 @@ export default class Annotator extends View {
             .child(div().text_size(10.5).text_color(t.dim).child(`${pending.length} comments · ${this.threadQueue.size} GitHub threads ready`)))
           .when(Boolean(target), el => el.child(this.badge(target.status === "idle" ? "Ready" : target.status === "blocked" ? "Needs you" : "Working", target.status === "idle" ? t.ansi2 : t.ansi3)))
           .child(this.button("export-review", "Export…", cx => this.act("export", { threads: [...this.threadQueue.values()] }, cx), batchSize > 0)))
-        .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && target?.status === "idle" && !reviewDrafts, "primary").w_full().h(33))
-        .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : batchSize && !reviewDrafts && target?.status === "idle" ? "One click submits comments and selected GitHub threads to this session." : sendHint(allComments, target, reviewDrafts))));
+        .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && target?.status === "idle" && !reviewDrafts && !this.reviewNote.uncertain, "primary").w_full().h(33))
+        .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : batchSize && !reviewDrafts && target?.status === "idle" ? "One click submits comments, selected GitHub threads, and your general note to this session." : sendHint(allComments, target, reviewDrafts))));
   }
 }

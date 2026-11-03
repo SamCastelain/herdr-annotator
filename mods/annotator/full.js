@@ -76,7 +76,7 @@ export function renderFull(self, cx) {
   const stats = file ? fileStats(file) : null;
   const hasDraft = self.hasDraft(), hasNoteDraft = Boolean(self.editor.value().trim()), selection = self.selection;
   const reviewDrafts = self.hasReviewDrafts();
-  const pending = pendingComments(allComments), batch = pending.length + self.threadQueue.size;
+  const pending = pendingComments(allComments), batch = pending.length + self.threadQueue.size + (self.reviewNote.editor.value().trim() ? 1 : 0);
   const target = self.currentSession(), unread = comments.filter(c => !c.read).length + threads.filter(c => !c.read).length;
   const listId = `full-diff-${file?.path ?? "empty"}-${self.diffStyle}`;
   const diff = v_flex().id("full-diff-frame").relative().flex_1().min_h(0)
@@ -246,10 +246,11 @@ export function renderFull(self, cx) {
     .when(Boolean(self.exportText), el => el.child(v_flex().p(12).gap(5).bg(t.surface)
       .child(Textarea.new(self.output).h(110).w_full())
       .child(self.button("full-close-export", "Close export", cx => { self.exportText = null; cx.notify(); }))))
+    .child(v_flex().flex_none().px(16).py(8).bg(t.chrome).child(self.reviewNoteComposer()))
     .child(h_flex().h(60).flex_none().px(16).gap(12).items_center().bg(t.chrome).border_t(1).border_color(t.border)
       .child(v_flex().flex_1().min_w(0).gap(3)
         .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${target.address} · ${target.status}` : "Source chat unavailable · sending disabled"))
         .child(div().text_size(11).text_color(t.dim).child(self.snapshotError ? `${snapshot ? "Cached review · " : ""}Refresh must succeed before saving or sending.` : reviewDrafts ? "Save or cancel unfinished comments in this comparison before sending." : `${pending.length} local comments · ${self.threadQueue.size} GitHub threads ready`)))
       .child(self.button("full-export", "Export…", cx => self.act("export", { threads: [...self.threadQueue.values()] }, cx), batch > 0))
-      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !reviewDrafts, "primary")));
+      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !reviewDrafts && !self.reviewNote.uncertain, "primary")));
 }

@@ -96,6 +96,48 @@ function harness() {
   return { mod, nodes, requests, state, cx, drain, snapshot };
 }
 
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} review includes a general note and supports note-only sends`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.data.comments = [];
+  h.mod.reviewNote.editor.set_value("Please keep this change small.");
+  h.mod.render(h.cx);
+  assert.ok(h.nodes.some(n => n.id === "review-general-note"));
+  h.nodes.filter(n => n.id === (full ? "full-send" : "send-review")).at(-1).events.on_click(null, h.cx);
+  await h.drain();
+  assert.equal(h.requests.at(-1).note, "Please keep this change small.");
+  assert.equal(h.mod.reviewNote.editor.value(), "");
+});
+
+test("general notes stay with their checkout and are included in exports, not individual thread fixes", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.reviewNote.editor.set_value("General direction");
+  h.mod.act("export", {}, h.cx); await h.drain();
+  assert.equal(h.requests.at(-1).note, "General direction");
+  h.mod.sendToSession(h.cx, { id: "thread1", fingerprint: "v1" }); await h.drain();
+  assert.equal(h.requests.at(-1).note, "");
+  assert.equal(h.mod.reviewNote.editor.value(), "General direction");
+  h.state.scope = { repo: "/other", machine: null }; h.mod.refresh(h.cx); await h.drain();
+  assert.equal(h.mod.reviewNote.editor.value(), "");
+  h.state.scope = { repo: "/checkout", machine: null }; h.mod.refresh(h.cx); await h.drain();
+  assert.equal(h.mod.reviewNote.editor.value(), "General direction");
+});
+
+test("failed general note sends keep text and require checking chat before retry", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.reviewNote.editor.set_value("Keep this note");
+  h.state.reply = request => { if (request.op === "send") throw new Error("Delivery not confirmed"); };
+  h.mod.sendToSession(h.cx); await h.drain();
+  assert.equal(h.mod.reviewNote.editor.value(), "Keep this note");
+  h.mod.sendToSession(h.cx); await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "send").length, 1);
+  h.mod.render(h.cx);
+  h.nodes.filter(n => n.id === "review-note-checked").at(-1).events.on_click(null, h.cx);
+  h.state.reply = null; h.mod.sendToSession(h.cx); await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "send").length, 2);
+  assert.equal(h.mod.reviewNote.editor.value(), "");
+});
+
 test("one click sends saved comments; rendering alone never sends", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
   assert.ok(h.nodes.some(n => n.id === "diff-0"));
@@ -369,6 +411,15 @@ test("a draft remains reachable when its file leaves the comparison", async () =
   h.mod.selectFile("a.rs", h.cx); await h.drain();
   assert.equal(h.mod.editor.value(), "Keep this draft"); assert.equal(h.mod.canSaveComment(), false);
   h.mod.cancelDraft(h.cx); assert.ok(!h.mod.reviewFiles().some(file => file.path === "a.rs"));
+});
+
+test("new-checkout rendering never creates retained note/editor state", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.state.scope = { repo: "/another-checkout", machine: null };
+  h.state.forbidNewInputs = true;
+  assert.doesNotThrow(() => h.mod.render(h.cx));
+  h.state.forbidNewInputs = false; await h.drain();
+  assert.ok(h.mod.reviewNotes.has(h.mod.context));
 });
 
 for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} hides resolved local notes and GitHub threads; toggle keeps history recoverable`, async () => {

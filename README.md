@@ -40,6 +40,9 @@ cards also offer **Copy** and **Copy thread**.
 
 ### 3. Send to the source session
 
+Add an optional **General note** beside **Send review** for overall direction. It
+appears after comments and GitHub threads, can be sent alone, and is included in exports.
+
 **Send review** submits saved comments and queued GitHub threads as one message,
 with file paths and source excerpts. It uses the chat in your source tab and
 requires an idle agent. It does not choose a chat in another tab or force text

@@ -46,7 +46,15 @@ impl PreparedReview {
         include_local: bool,
         cache: Option<&github::Cache>,
         threads: &[ThreadRef],
+        note: &str,
     ) -> Result<String> {
-        crate::combined_feedback(&self.validation, comments, include_local, cache, threads)
+        crate::combined_feedback(
+            &self.validation,
+            comments,
+            include_local,
+            cache,
+            threads,
+            note,
+        )
     }
 }
