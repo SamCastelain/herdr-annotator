@@ -27,8 +27,10 @@ visibility, unread filter, context size and widths. Base refs stay checkout-spec
 Syntax/Plain is a saved toggle. A bounded lexer colors source tokens with theme
 colors without changing source text or the diff's add/delete/selection backgrounds.
 Inline note cards use 8px padding, 4px gaps and 12px body text. No instructional
-footer repeats beneath each note. Click an open unsent card to edit; other cards
-open read/resolve/requeue actions.
+footer repeats beneath each note. Readonly bodies use selectable, HTML-escaped
+TextView content. Clicking opens Copy/Edit/Delete/read/resolve actions, not
+editing; text-selection drags must not activate the row. Copy controls preserve
+exact comment/thread text and diff/selected source lines, even during refresh.
 Keep a fixed native notes slot before the file and after each source row, even
 when empty. gpui-shell 0.7.1 splices the entire measured list when item count
 changes, resetting the reading position. Adding/removing/filtering comments

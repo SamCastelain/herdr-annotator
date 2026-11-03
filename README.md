@@ -25,13 +25,16 @@ base ref, or use Auto, which prefers local `develop`. No automatic fetch.
 
 Click a line; Shift-click extends the range on the same diff side. Choose
 **Whole file** for a file note. Save with **⌘Enter / Ctrl+Enter** or the button.
-Add comments across files, click an inline comment to edit it in full view,
-or use **Edit** / **Delete…** on its card. Deletion asks for confirmation.
+Add comments across files. Click an inline comment for **Copy**, **Edit**, or
+**Delete…** actions. Deletion asks for confirmation.
 
 ![Selected code and a comment ready to save](docs/images/comment.png)
 
 Saved notes survive restarts. When code moves, Annotator re-anchors notes only
 to unique matching context. Outdated notes stay visible but do not enter a send.
+Comment and GitHub reply text supports selection and **⌘C / Ctrl+C**. Use
+**Copy…** for diff previews, selected source lines, paths, or saved comments;
+cards also offer **Copy** and **Copy thread**.
 
 ### 3. Send to the source session
 

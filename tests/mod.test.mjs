@@ -131,6 +131,44 @@ test("update protection tracks active and hidden drafts and unmounts editors dur
   assert.equal(h.requests.length, before);
 });
 
+test("read-only comments are selectable literal text and Copy preserves their exact body", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const body = '<img src="https://example.invalid/a.png">\nKeep & copy this';
+  h.mod.data.comments[0].body = body; h.mod.render(h.cx);
+  const view = h.state.textViews.find(v => v.id === "comment-body-note1");
+  assert.ok(view.html.includes("&lt;img")); assert.ok(!view.html.includes("<img"));
+  assert.ok(view.html.includes("<br>"));
+  assert.equal(h.nodes.find(n => n.id === "comment-body-note1").selectable, true);
+  const before = h.requests.length;
+  h.nodes.find(n => n.id === "copy-comment-note1").events.on_click(null, h.cx);
+  assert.equal(h.state.clipboard, body); assert.equal(h.requests.length, before);
+});
+
+test("Copy diff/selection works during refresh without losing source text or draft intent", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const file = h.mod.data.snapshot.files[0];
+  file.rows = [{ kind: "delete", old: 2, new: null, text: "\told <value>" }, { kind: "add", old: null, new: 2, text: "\tnew λ & value" }];
+  h.mod.selection = { side: "old", start: 2, end: 2 }; h.mod.busy = true;
+  const before = h.requests.length; h.mod.copyMenu(file);
+  h.nodes.find(n => n.id === "copy-selection").events.on_click(null, h.cx);
+  assert.equal(h.state.clipboard, "\told <value>");
+  h.nodes.find(n => n.id === "copy-diff").events.on_click(null, h.cx);
+  assert.equal(h.state.clipboard, "-\told <value>\n+\tnew λ & value");
+  assert.equal(h.mod.selection.side, "old"); assert.equal(h.requests.length, before);
+});
+
+test("dragging inline comment text does not activate editing or comment actions", async () => {
+  const h = harness(); h.state.props = { presentation: "full" };
+  h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
+  h.state.diffList.render(2);
+  assert.equal(h.nodes.find(n => n.id === "inline-body-note1").selectable, true);
+  const frame = h.nodes.find(n => n.id === "full-diff-frame");
+  frame.events.on_mouse_down({ local_position: { x: 10, y: 50 } });
+  frame.events.on_mouse_up({ local_position: { x: 180, y: 50 } });
+  h.nodes.find(n => n.id === h.state.diffList.id).events.on_item_click("notes-row-0", h.cx);
+  assert.equal(h.mod.editDraft, undefined); assert.equal(h.mod.activeComment, null);
+});
+
 test("inline edit saves only that note, preserves later edits, and blocks accidental batch send", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain();
   h.mod.beginEdit(h.mod.data.comments[0], h.cx);
@@ -701,6 +739,9 @@ test("full reader defaults to two columns with inline notes and an on-demand com
   h.nodes.filter(n => n.id === h.state.diffList.id).at(-1).events.on_item_click("notes-row-0", h.cx);
   h.mod.render(h.cx);
   assert.ok(h.nodes.some(n => n.id === "full-comment-actions"));
+  assert.equal(h.mod.editDraft, undefined, "clicking readonly text must not force editing");
+  h.nodes.filter(n => n.id === "edit-note1").at(-1).events.on_click(null, h.cx);
+  h.mod.render(h.cx);
   assert.equal(h.mod.editDraft.id, "note1");
   h.nodes.filter(n => n.id === "cancel-edit-note1").at(-1).events.on_click(null, h.cx);
   h.mod.render(h.cx);

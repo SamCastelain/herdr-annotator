@@ -1,5 +1,5 @@
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, v_resizable, resizable_panel, v_virtual_list, Scrollbar, TextareaState, Textarea } from "gpui-base";
+import { v_flex, h_flex, v_resizable, resizable_panel, v_virtual_list, Scrollbar, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, home, props, theme, settings, shared, setShared, run, layout, appHome, watchFolder, machines, nextCommand } from "herdr";
 import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, unreadItems, visibleComments, layoutSidebar, reviewSidebarTransition, fullPreferences, snapshotFailure, needsFreshSnapshot, savedBaseChoice } from "./review.js";
 import { renderFull } from "./full.js";
@@ -8,6 +8,7 @@ import { DraftLifecycle } from "./draft.js";
 import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
 import { UpdateController } from "./updates.js";
+import { escapeText, copiedDiff, copiedSelection } from "./review.js";
 
 function location() {
   const fixed = props();
@@ -69,6 +70,29 @@ export default class Annotator extends View {
   }
 
   helper() { return props()?.helper ?? `${home()}/.local/bin/herdr-annotator`; }
+
+  selectableText(id, text) {
+    // Plain content only: never interpret comments as HTML/Markdown or load
+    // images/links from them. TextView owns native selection and Cmd/Ctrl+C.
+    return TextView.html(id, escapeText(text).replace(/\n/g, "<br>"))
+      .selectable(true).scrollable(false).w_full();
+  }
+
+  copyText(text, cx) {
+    try { cx.write_to_clipboard(text); this.notice = "Copied to clipboard."; }
+    catch (error) { this.notice = `Copy failed: ${error}`; }
+    cx.notify();
+  }
+
+  copyMenu(file) {
+    const t = theme(), selection = this.selection;
+    return h_flex().id("copy-options").px(10).py(4).gap(4).flex_wrap().flex_none().bg(t.chrome)
+      .child(this.button("copy-diff", file?.truncated ? "Copy diff preview" : "Copy diff", cx => this.copyText(copiedDiff(file), cx), Boolean(file?.loaded && file.rows.length)))
+      .child(this.button("copy-selection", "Copy selected lines", cx => this.copyText(copiedSelection(file, selection), cx), Boolean(file && selection)))
+      .child(this.button("copy-path", "Copy file path", cx => this.copyText(file.path, cx), Boolean(file)))
+      .child(this.button("copy-checkout", "Copy checkout", cx => this.copyText(this.data?.snapshot.scope.repo ?? location().scope.repo, cx)))
+      .child(this.button("copy-all-comments", "Copy all comments", cx => this.copyText((this.data?.comments ?? []).map(comment => `${comment.path} · ${commentLocation(comment)}\n${comment.body}`).join("\n\n"), cx), Boolean(this.data?.comments.length)));
+  }
 
   get busy() { return Boolean(this._busy || this.updates?.running); }
   set busy(value) { this._busy = value; this.publishUpdateState(); }
@@ -355,7 +379,8 @@ export default class Annotator extends View {
     const failure = this.snapshotError;
     return v_flex().id("review-error").m(8).p(10).gap(6).rounded(6).bg(t.ansi1 + "12").text_size(12)
       .child(div().font_semibold().text_color(t.ansi1).child(failure?.title ?? "Review operation failed"))
-      .child(div().text_color(t.muted).child(this.error))
+      .child(this.selectableText("review-error-text", this.error ?? "").text_color(t.muted))
+      .child(this.button("copy-error", "Copy error", cx => this.copyText(this.snapshotError?.detail ?? this.error ?? "", cx)))
       .when(Boolean(failure && this.data), el => el.child(div().text_color(t.ansi3).child("Showing the last loaded diff. Review actions are paused until Refresh succeeds.")))
       .when(Boolean(failure), el => el.child(h_flex().gap(5)
         .child(this.button("error-retry", "↻ Retry", cx => this.refresh(cx, true), true, "secondary"))
@@ -608,10 +633,11 @@ export default class Annotator extends View {
       .child(div().text_size(10.5).text_color(thread.read ? t.dim : t.accent).child(thread.read ? "Read" : "● Unread"))
       .child(div().font_semibold().text_size(12).child(`${thread.path}:${thread.start_line ?? thread.line ?? "?"}${thread.start_line ? `–${thread.line}` : ""} · ${thread.side}`))
       .child(div().text_size(11).text_color(t.muted).child(thread.resolved ? "Resolved" : thread.delivery ? `Delivery: ${thread.delivery}` : thread.incomplete ? "Incomplete thread · cannot send" : `${thread.outdated ? "Outdated location · " : ""}${thread.has_updates ? "New replies · " : ""}Open`))
-      .children(thread.comments.map(c => v_flex().gap(3)
+      .children(thread.comments.map((c, index) => v_flex().gap(3)
         .child(div().text_size(11).text_color(t.accent).child(`@${c.author}`))
-        .child(div().text_size(12).child(c.body))))
+        .child(this.selectableText(`thread-body-${thread.id}-${index}`, c.body).text_size(12))))
       .child(h_flex().gap(5).flex_wrap()
+        .child(this.button(`copy-thread-${thread.id}`, "Copy thread", cx => this.copyText(`${thread.path}:${thread.line ?? "?"}\n\n${thread.comments.map(comment => `@${comment.author}\n${comment.body}`).join("\n\n")}`, cx)))
         .child(this.button(`reply-thread-${thread.id}`, "Reply", cx => this.beginGithubReply(thread, cx), !thread.incomplete && !this.github?.error))
         .child(this.button(`read-thread-${thread.id}`, thread.read ? "Mark unread" : "Mark read", cx => this.markGithubRead(thread, cx)))
         .child(this.button(`queue-${thread.id}`, queued ? "Remove from review" : "Add to review", cx => {
@@ -634,7 +660,7 @@ export default class Annotator extends View {
 
   button(id, text, action, enabled = true, variant = "quiet") {
     const t = theme();
-    const active = enabled && !this.busy && !(this.snapshotError && needsFreshSnapshot(id));
+    const active = enabled && (!this.busy || id.startsWith("copy-")) && !(this.snapshotError && needsFreshSnapshot(id));
     return h_flex().id(id).h(29).px(10).rounded(6).text_size(12).items_center().justify_center().flex_none()
       .text_color(active ? t.foreground : t.dim)
       .when(variant === "primary", el => el.bg(active ? t.accent : t.raised)
@@ -681,7 +707,7 @@ export default class Annotator extends View {
         .child(this.badge(comment.read ? "Read" : "Unread", comment.read ? t.dim : t.accent))
         .child(div().flex_1().text_size(11).text_color(t.muted).child(commentLocation(comment)))
         .child(this.badge(status.label, color, color + "18")))
-      .when(this.editDraft?.id !== comment.id, el => el.child(div().text_size(13).text_color(t.foreground).child(comment.body)))
+      .when(this.editDraft?.id !== comment.id, el => el.child(this.selectableText(`comment-body-${comment.id}`, comment.body).text_size(13).text_color(t.foreground)))
       .when(this.editDraft?.id === comment.id, el => el.child(v_flex().gap(5)
         .child(Textarea.new(this.editDraft.editor).h(70).w_full())
         .child(h_flex().gap(4)
@@ -692,6 +718,7 @@ export default class Annotator extends View {
       .when(comment.delivery === "uncertain", el => el.child(div().text_size(11).text_color(t.ansi3)
         .child("Check the chat before sending again; it may already have received this comment.")))
       .child(h_flex().gap(4).justify_end()
+        .child(this.button(`copy-comment-${comment.id}`, "Copy", cx => this.copyText(comment.body, cx)))
         .when(!comment.resolved && !comment.delivery, el => el
           .child(this.button(`edit-${comment.id}`, "Edit", cx => this.beginEdit(comment, cx), !this.hasDraft()))
           .child(this.button(`delete-${comment.id}`, "Delete…", cx => { this.deleting = comment.id; cx.notify(); }, !this.hasDraft())))
@@ -851,8 +878,10 @@ export default class Annotator extends View {
             .child(this.button("context-all", "Full context", cx => this.expandContext(1000000, cx), this.contextLines < 1000000))
             .child(this.button("context-reset", "Collapse", cx => this.expandContext(3, cx), this.contextLines > 3)))
           .child(h_flex().gap(4)
+            .child(this.button("copy-menu", "Copy…", cx => { this.copyMenuOpen = !this.copyMenuOpen; cx.notify(); }))
             .child(this.button("ask-file", "Ask about diff", cx => this.beginQuestion({ kind: "file" }, cx), !hasDraft && file?.loaded && !file?.truncated))
             .when(Boolean(selection), el => el.child(this.button("ask-selection", "Ask about selection", cx => this.beginQuestion({ kind: "selection", selection: selectionPayload(selection) }, cx), !hasDraft))))))
+        .when(this.copyMenuOpen, el => el.child(this.copyMenu(file)))
         .child(v_flex().id("review-diff").flex_1().min_h(0).overflow_y_scrollbar().children([
           ...(file?.note ? [div().m(8).p(8).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child(file.note)] : []),
           ...(file ? this.codeRows(file, comments, t) : [v_flex().p(18).gap(7)

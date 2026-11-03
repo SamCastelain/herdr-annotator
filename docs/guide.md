@@ -195,7 +195,9 @@ bounded; full review colors only the visible rows.
 
 ### Edit, delete, and quick questions
 
-Use **Edit** on a saved local comment, or click its inline card in full review.
+Click a saved inline comment to open its **Copy**, **Edit**, and **Delete…**
+actions. Clicking does not enter editing automatically, so its text stays
+available for selection.
 When several notes share a line, clicking their group opens individual action
 cards; choose **Edit** on the note you want. Saving and filtering notes keep
 the native source-list slots stable so the diff retains its reading position.
@@ -224,6 +226,20 @@ uncertainty before sending. Reopening the same question does not automatically
 retry it. If confirmation is lost, check the chat, then use **I checked chat ·
 Send again** with the original text and recipient. Confirmed identical questions
 against the same snapshot return their receipt instead of sending twice.
+
+### Copying text
+
+Comments and GitHub reply bodies support native text selection and
+**⌘C / Ctrl+C**. **Copy** on a comment copies its exact saved body; **Copy
+thread** includes the thread's authors and replies. Dragging inline text does
+not open its action panel or start editing.
+
+Source rows are virtualized review targets, not one continuous selectable
+document. Open **Copy…** for the diff preview, selected old/new source lines,
+the file path, checkout path, or all saved local comments. Selected-line copying
+omits gutters and diff signs; diff copying keeps signs and hunk headers. These
+copy actions stay usable during refresh and do not save or send anything.
+For a truncated diff, copying includes only the available preview.
 
 ### Read and unread
 

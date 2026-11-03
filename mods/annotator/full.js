@@ -42,7 +42,7 @@ function diffRow(row, split, selection, t, font, marks, self, highlights) {
     .when(!split, el => el.child(codeCell(row, null, selection, t, marks, self, highlights)));
 }
 
-function inlineNote(comment, active, t) {
+function inlineNote(comment, active, t, self) {
   const status = commentStatus(comment);
   return v_flex().id(`full-inline-${comment.id}`).mx(10).my(4).p(8).gap(4).rounded(6).bg(t.surface)
     .border_1().border_color(active ? t.accent : t.border).cursor_pointer()
@@ -50,7 +50,7 @@ function inlineNote(comment, active, t) {
       .child(div().text_color(comment.read ? t.dim : t.accent).child(comment.read ? "Read" : "● Unread"))
       .child(div().flex_1().text_color(t.muted).child(commentLocation(comment)))
       .child(div().text_color(t[status.tone]).child(status.label)))
-    .child(div().text_size(12).child(comment.body));
+    .child(self.selectableText(`inline-body-${comment.id}`, comment.body).text_size(12));
 }
 
 export function renderFull(self, cx) {
@@ -78,15 +78,18 @@ export function renderFull(self, cx) {
   const target = self.currentSession(), unread = comments.filter(c => !c.read).length + threads.filter(c => !c.read).length;
   const listId = `full-diff-${file?.path ?? "empty"}-${self.diffStyle}`;
   const diff = v_flex().id("full-diff-frame").relative().flex_1().min_h(0)
-    .on_mouse_down("left", event => { self.diffPress = { event, path: file?.path, revision: snapshot?.revision }; })
+    .on_mouse_down("left", event => { self.diffPress = { event, path: file?.path, revision: snapshot?.revision }; self.diffRelease = null; })
     .on_mouse_down("right", event => { self.diffPress = { event, path: file?.path, revision: snapshot?.revision }; })
+    .on_mouse_up("left", event => { self.diffRelease = event; })
     .child(list(listId, entries.length, index => entries[index].key, index => {
       const entry = entries[index];
       if (entry.row) return diffRow(entry.row, split, selection, t, font, marks, self, highlights);
-      return entry.comments.length ? v_flex().children(entry.comments.map(comment => inlineNote(comment, comment.id === self.activeComment, t))) : div().h(0);
+      return entry.comments.length ? v_flex().children(entry.comments.map(comment => inlineNote(comment, comment.id === self.activeComment, t, self))) : div().h(0);
     })
       .size_full().on_item_click((key, cx) => {
         if (!file || self.open !== file.path || self.data?.snapshot.revision !== snapshot.revision) return;
+        const down = self.diffPress?.event.local_position, up = self.diffRelease?.local_position;
+        if (down && up && Math.hypot(up.x - down.x, up.y - down.y) > 3) return;
         const entry = byKey.get(key);
         if (!entry) return;
         if (entry.comments) {
@@ -94,8 +97,9 @@ export function renderFull(self, cx) {
           if (hasDraft) { self.notice = "Save or cancel your draft before opening a comment."; cx.notify(); return; }
           const comment = entry.comments[0];
           self.activeCommentIds = entry.comments.map(comment => comment.id);
-          if (entry.comments.length === 1 && !comment.delivery && !comment.resolved) self.beginEdit(comment, cx);
-          else { self.activeComment = comment.id; self.composerOpen = false; self.selection = null; cx.notify(); }
+          // Keep readonly text mounted for word/drag selection. Editing is an
+          // explicit action, not a side effect of trying to copy a comment.
+          self.activeComment = comment.id; self.composerOpen = false; self.selection = null; cx.notify();
           return;
         }
         if (file.truncated) return;
@@ -153,10 +157,12 @@ export function renderFull(self, cx) {
           .child(self.button("full-new-file-comment", "File comment", cx => {
             self.fileNote(cx);
           }, Boolean(file)))
+          .child(self.button("copy-full-menu", "Copy…", cx => { self.copyMenuOpen = !self.copyMenuOpen; cx.notify(); }))
           .child(self.button("full-ask-file", "Ask about diff", cx => self.beginQuestion({ kind: "file" }, cx), Boolean(file?.loaded) && !file?.truncated && !hasDraft))
           .when(Boolean(selection), el => el.child(self.button("full-ask-selection", "Ask selection", cx => self.beginQuestion({ kind: "selection", selection: { side: selection.side, start: selection.start, end: selection.end } }, cx), !hasDraft)))
           .child(div().flex_1())
           .child(div().text_size(11).text_color(t.dim).child("Click a line · Shift-click for a range"))))
+      .when(self.copyMenuOpen, el => el.child(self.copyMenu(file)))
       .when(Boolean(file?.note), el => el.child(div().p(10).text_color(t.ansi3).child(file.note)))
       .when(split && Boolean(file), el => el.child(h_flex().h(26).flex_none().bg(t.raised).text_size(11).text_color(t.muted)
         .child(div().flex_1().px(14).child("Before"))

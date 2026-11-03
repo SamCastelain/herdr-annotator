@@ -27,6 +27,18 @@ export function selectionPayload(selection) {
   return { side, start, end };
 }
 
+export function escapeText(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+export function copiedDiff(file) {
+  return file.rows.map(row => `${row.kind === "add" ? "+" : row.kind === "delete" ? "-" : row.kind === "context" ? " " : ""}${row.text}`).join("\n");
+}
+
+export function copiedSelection(file, selection) {
+  return selection ? file.rows.filter(row => selected(row, selection)).map(row => row.text).join("\n") : "";
+}
+
 export function selected(row, selection) {
   if (!selection) return false;
   const n = row[selection.side];
