@@ -181,8 +181,25 @@ pub fn snapshot(scope: &Scope, view: &ViewSpec) -> Result<Snapshot> {
         scope.comparison.base = Some(base);
         Some(merge.trim().to_owned())
     } else {
-        scope.comparison = Comparison::default();
+        scope.comparison.base = None;
         None
+    };
+    let baseline = if scope.comparison.mode == DiffMode::LastCommit {
+        if head.is_none() {
+            return Err("Last commit scope needs a commit".into());
+        }
+        let parent = git(&scope, &["rev-parse", "--verify", "--quiet", "HEAD^"])?;
+        Some(if parent.code == 0 {
+            parent.text.trim().to_owned()
+        } else {
+            // The root commit compares against the empty tree. hash-object reads
+            // only; without -w it never creates an object or changes the index.
+            required(&scope, &["hash-object", "-t", "tree", "/dev/null"])?
+                .trim()
+                .to_owned()
+        })
+    } else {
+        merge_base.clone().or(head.clone())
     };
     let status = required(
         &scope,
@@ -194,9 +211,8 @@ pub fn snapshot(scope: &Scope, view: &ViewSpec) -> Result<Snapshot> {
             "--untracked-files=all",
         ],
     )?;
-    let baseline = merge_base.as_deref().or(head.as_deref());
     let mut entries = std::collections::BTreeMap::<String, String>::new();
-    if let Some(base) = baseline {
+    if let Some(base) = baseline.as_deref() {
         let changed = required(
             &scope,
             &[
@@ -255,6 +271,7 @@ pub fn snapshot(scope: &Scope, view: &ViewSpec) -> Result<Snapshot> {
         limited,
         bases,
         merge_base,
+        baseline,
         view: ViewSpec {
             file: selected.clone(),
             context: view.context,
@@ -269,7 +286,7 @@ pub fn snapshot(scope: &Scope, view: &ViewSpec) -> Result<Snapshot> {
 
 pub(crate) fn hydrate(snapshot: &mut Snapshot, paths: &[String]) -> Result<()> {
     let scope = &snapshot.scope;
-    let baseline = snapshot.merge_base.as_deref().or(snapshot.head.as_deref());
+    let baseline = snapshot.baseline.as_deref();
     let unified = format!("--unified={}", snapshot.view.context);
     let mut budget = (2 * 1024 * 1024usize).saturating_sub(
         snapshot

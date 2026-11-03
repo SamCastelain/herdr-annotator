@@ -1,27 +1,16 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_resizable, resizable_panel, v_virtual_list, Scrollbar, TextareaState, Textarea } from "gpui-base";
-import { spaces, panes, focused, agents, exec, home, props, theme, settings, shared, setShared, run, layout, appHome, watchFolder, machines } from "herdr";
+import { spaces, panes, focused, agents, exec, home, props, theme, settings, shared, setShared, run, layout, appHome, watchFolder, machines, nextCommand } from "herdr";
 import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, unreadItems, visibleComments, layoutSidebar, reviewSidebarTransition, fullPreferences, snapshotFailure, needsFreshSnapshot, savedBaseChoice } from "./review.js";
 import { renderFull } from "./full.js";
 import { highlightDiff } from "./syntax.js";
 import { DraftLifecycle } from "./draft.js";
 import { GithubRefresh } from "./github-refresh.js";
+import { reviewLocation } from "./review.js";
 
 function location() {
-  const fixed = props()?.scope;
-  if (fixed) return { scope: fixed, space: props()?.space ?? null, tab: props()?.tab ?? null };
-  const f = focused();
-  const space = spaces().find(s => s.id === f?.space) ?? spaces().find(s => s.active);
-  const tabs = new Set((space?.tabs ?? []).filter(t => t.active).map(t => t.id));
-  const allTabs = new Set((space?.tabs ?? []).map(t => t.id));
-  const ps = panes();
-  if (f?.pane === null && f?.terminal && f?.cwd) {
-    const machine = f.terminal.includes("/") ? f.terminal.split("/")[0] : null;
-    const owner = agents().find(a => a.address === f.terminal);
-    return { scope: { repo: f.cwd, machine }, space: owner?.space ?? null, tab: owner?.tab ?? f.tab ?? null };
-  }
-  const pane = ps.find(p => p.pane === f?.pane && p.terminal) ?? ps.find(p => tabs.has(p.tab) && p.cwd) ?? ps.find(p => allTabs.has(p.tab) && p.cwd);
-  return { scope: { repo: pane?.cwd || space?.folder || "", machine: space?.machine ?? null }, space: space?.id ?? null, tab: f?.tab ?? space?.tabs?.find(t => t.active)?.id ?? null };
+  const fixed = props();
+  return fixed?.scope ? reviewLocation(fixed) : reviewLocation(null, focused(), spaces(), panes(), agents());
 }
 const contextKey = () => JSON.stringify(location());
 
@@ -31,6 +20,7 @@ export default class Annotator extends View {
     this.error = null; this.notice = null; this.context = null;
     this.snapshotError = null; this.showErrorDetails = false;
     this.sessions = new Map(); this.exportText = null;
+    this.edits = new Map(); this.questions = new Map();
     this.githubDrafts = new Map();
     this.full = props()?.presentation === "full"; this.onlyUnread = false;
     const preferences = this.fullSettings();
@@ -59,6 +49,10 @@ export default class Annotator extends View {
     this.refresh(cx);
     cx.timer.every(15000, cx => { if (!this.editor.value().trim()) this.refresh(cx); });
     cx.timer.every(300000, cx => this.refreshGithub(cx));
+    cx.spawn(async cx => {
+      try { for (;;) { const command = await nextCommand(); this.handleCommand(command, cx); } }
+      catch (e) { this.commandError = String(e); }
+    });
     // A hidden sidebar and an inactive review tab need not render. Herdr saves
     // focus in view.json; native file events keep restoration alive without
     // polling focus or keeping a redraw timer alive.
@@ -86,20 +80,21 @@ export default class Annotator extends View {
   get showResolved() { return shared("annotator.showResolved") === true; }
 
   resolvedCount() {
-    return (this.data?.comments ?? []).filter(c => c.resolved).length
-      + (this.github?.threads ?? []).filter(c => c.resolved).length;
+    const items = [...(this.data?.comments ?? []), ...(this.github?.threads ?? [])];
+    return items.length - visibleComments(items).length;
   }
 
   resolvedFilter(id) {
-    return this.button(id, `${this.showResolved ? "Hide" : "Show"} resolved · ${this.resolvedCount()}`, cx => {
+    return this.button(id, `${this.showResolved ? "Hide" : "Show"} sent/resolved · ${this.resolvedCount()}`, cx => {
       setShared("annotator.showResolved", !this.showResolved);
-      this.activeComment = null; cx.notify();
+      this.activeComment = null; this.activeCommentIds = null; cx.notify();
     }, true, this.showResolved ? "secondary" : "quiet");
   }
 
   fileNote(cx) {
+    if (this.editDraft || this.questionDraft) return;
     this.draft.anchor(null, this.data?.snapshot.revision);
-    this.activeComment = null; this.editor.focus(); cx.notify();
+    this.activeComment = null; this.activeCommentIds = null; this.editor.focus(); cx.notify();
   }
 
   cancelDraft(cx) {
@@ -128,9 +123,117 @@ export default class Annotator extends View {
   baseLabel() { return this.baseExplicit ? this.base ?? "Base…" : this.base ? `Auto: ${this.base}` : "Auto"; }
 
   saveComment(cx) {
-    if (this.busy || this.snapshotError || !this.data || this.needsSelection || !this.editor.value().trim()
+    if (this.busy || this.snapshotError || !this.data || this.editDraft || this.questionDraft || this.needsSelection || !this.editor.value().trim()
       || !this.data.snapshot.files.some(file => file.path === this.open)) return;
     this.act("add", { path: this.open, selection: selectionPayload(this.selection), body: this.editor.value() }, cx);
+  }
+
+  get editDraft() { return this.edits.get(this.context); }
+  get questionDraft() { return this.questions.get(this.context); }
+  hasDraft() { return Boolean(this.editor.value().trim() || this.editDraft || this.questionDraft); }
+
+  beginEdit(comment, cx) {
+    if (this.busy || this.snapshotError || contextKey() !== this.context || comment.delivery || comment.resolved) return;
+    if (this.hasDraft()) { this.notice = "Save or cancel your draft before editing a comment."; cx.notify(); return; }
+    const editor = TextareaState.new({ value: comment.body, rows: 3 });
+    editor.set_value(comment.body); editor.on("change", (_event, cx) => cx.notify());
+    editor.on("submit", (event, cx) => { if (event.secondary && !event.shift) this.saveEdit(cx); });
+    this.edits.set(this.context, { id: comment.id, expected_body: comment.body, editor });
+    this.activeComment = comment.id; this.activeCommentIds = null; this.view = this.full ? this.view : "comments"; editor.focus(); cx.notify();
+  }
+
+  saveEdit(cx) {
+    const edit = this.editDraft;
+    if (!edit?.editor.value().trim()) return;
+    this.act("edit", { id: edit.id, expected_body: edit.expected_body, body: edit.editor.value() }, cx);
+  }
+
+  beginQuestion(context, cx) {
+    if (this.busy || this.snapshotError || !this.data || contextKey() !== this.context) return;
+    if (this.hasDraft()) { this.notice = "Save or cancel your draft before asking a question."; cx.notify(); return; }
+    const file = this.data.snapshot.files.find(f => f.path === this.open);
+    if (!file?.loaded || file.truncated) { this.notice = "Load a complete preview before asking about this diff."; cx.notify(); return; }
+    const editor = TextareaState.new({ placeholder: "What do you want to ask about this code?", rows: 3 });
+    editor.on("change", (_event, cx) => cx.notify());
+    editor.on("submit", (event, cx) => { if (event.secondary && !event.shift) this.sendQuestion(cx); });
+    this.questions.set(this.context, { id: this.githubReplyId(), path: file.path, context,
+      revision: this.data.snapshot.revision, scope: this.data.snapshot.scope,
+      view: this.data.snapshot.view ?? { file: file.path, context: this.contextLines }, editor, status: null });
+    this.notice = null; editor.focus(); cx.notify();
+  }
+
+  sendQuestion(cx, retry = false) {
+    const draft = this.questionDraft, target = this.currentSession();
+    if (!draft || this.busy || this.snapshotError || !draft.editor.value().trim() || contextKey() !== this.context) return;
+    if (draft.status === "uncertain" && !retry) return;
+    if (!target || target.status !== "idle") { draft.error = "Focus the source chat and wait until it is idle."; cx.notify(); return; }
+    if (retry && (draft.body !== draft.editor.value() || draft.target !== target.address)) {
+      draft.error = "Retry must use the original question and recipient. Check the chat first."; cx.notify(); return;
+    }
+    const key = this.context, body = draft.editor.value();
+    draft.body = body; draft.target = target.address; draft.status = "uncertain"; draft.error = null;
+    this.busy = true; cx.notify();
+    cx.spawn(async cx => {
+      try {
+        const data = await this.request({ op: "ask", scope: draft.scope, revision: draft.revision, view: draft.view,
+          question_id: draft.id, target: draft.target, path: draft.path, context: draft.context, body, retry });
+        draft.status = data.question.status;
+        draft.error = data.question.error;
+        if (draft.status === "confirmed") {
+          if (draft.editor.value() === body) this.questions.delete(key);
+          else { draft.status = null; draft.id = this.githubReplyId(); }
+          if (contextKey() === key) {
+            this.notice = "Question sent to the source session.";
+            if (agents().some(a => a.address === draft.target)) run("pane.focus", { terminal: draft.target });
+          }
+        }
+      } catch (e) { draft.error = String(e); }
+      finally { this.busy = false; cx.notify(); }
+    });
+  }
+
+  questionComposer() {
+    const draft = this.questionDraft;
+    if (!draft) return div();
+    const target = this.currentSession();
+    return v_flex().id("question-composer").p(10).gap(6).flex_none().bg(theme().surface)
+      .child(div().font_semibold().text_size(12).child(`Ask · ${draft.path} · ${draft.context.kind}`))
+      .child(Textarea.new(draft.editor).h(70).w_full())
+      .child(div().text_size(11).text_color(theme().muted).child(target ? `To ${target.address} · ${target.status}` : "Source chat unavailable"))
+      .when(Boolean(draft.error), el => el.child(div().text_size(11).text_color(theme().ansi3).child(draft.error)))
+      .when(draft.status === "uncertain", el => el.child(div().text_size(11).text_color(theme().ansi3).child("Delivery is uncertain. Check the chat before retrying. Do not change the question or recipient.")))
+      .child(h_flex().gap(5)
+        .child(this.button("question-cancel", "Close", cx => { this.questions.delete(this.context); cx.notify(); }))
+        .child(this.button("question-send", "Send question", cx => this.sendQuestion(cx), Boolean(draft.editor.value().trim()) && target?.status === "idle" && draft.status !== "uncertain", "primary"))
+        .when(draft.status === "uncertain", el => el.child(this.button("question-retry", "I checked chat · Send again", cx => this.sendQuestion(cx, true), target?.status === "idle"))));
+  }
+
+  handleCommand(command, cx) {
+    if (command === "submit") this.sendToSession(cx);
+    else if (command === "ask") this.beginQuestion(this.selection ? { kind: "selection", selection: selectionPayload(this.selection) } : { kind: "file" }, cx);
+    else if (command === "scope") {
+      const modes = ["uncommitted", "last_commit", "branch"];
+      this.changeComparison(modes[(modes.indexOf(this.mode) + 1) % modes.length], this.base, cx);
+    } else if (command === "refresh") { this.refresh(cx, true); this.refreshGithub(cx, true); }
+    else if (command === "full") this.openFull(cx);
+    cx.notify();
+  }
+
+  consumeOpenRequest(cx) {
+    const request = shared("annotator.open");
+    if (!request) return;
+    const clear = () => { if (shared("annotator.open")?.id === request.id) setShared("annotator.open", null); };
+    if (typeof request.id !== "string" || !request.id || !Number.isFinite(request.at)
+      || Date.now() - request.at > 30000 || request.at > Date.now() + 5000 || typeof request.path !== "string"
+      || !request.path.startsWith("/") || request.path.includes("\0") || request.path.split("/").some(p => p === ".." || p === ".")) { clear(); return; }
+    if (this.busy || this.snapshotError || !this.data || this.hasDraft()) return;
+    const scope = this.data.snapshot.scope, root = scope.repo.replace(/\/$/, "");
+    if ((request.on ?? null) !== (scope.machine ?? null) || !request.path.startsWith(`${root}/`)) return;
+    if (this.openRequestId !== request.id) { this.openRequestId = request.id; this.refresh(cx, true); return; }
+    const path = request.path.slice(root.length + 1), file = this.data.snapshot.files.find(f => f.path === path);
+    if (!file) { this.notice = "Requested file has no diff in this scope."; clear(); return; }
+    if (this.open !== path || !file.loaded) { this.selectFile(path, cx); return; }
+    this.view = "diff"; this.filesOpen = true; clear();
   }
 
   handleKey(event, cx) {
@@ -227,7 +330,7 @@ export default class Annotator extends View {
       this.mode = draft?.mode ?? (this.full ? preferences.mode : props()?.scope?.comparison?.mode ?? "uncommitted");
       this.base = draft?.base ?? choice.base; this.baseExplicit = draft?.baseExplicit ?? choice.explicit;
       this.contextLines = draft?.contextLines ?? (this.full ? preferences.contextLines : props()?.context_lines ?? 3); this.bases = [];
-      this.exportText = null; this.error = null; this.snapshotError = null; this.showErrorDetails = false; this.notice = null; this.activeComment = null; this.composerOpen = false;
+      this.exportText = null; this.error = null; this.snapshotError = null; this.showErrorDetails = false; this.notice = null; this.activeComment = null; this.activeCommentIds = null; this.composerOpen = false;
       this.githubRefresh.invalidate();
       this.view = ["comments", "github"].includes(props()?.view) ? props().view : "diff";
     } else if (this.editor.value().trim()) {
@@ -274,20 +377,26 @@ export default class Annotator extends View {
     const context = this.context;
     const snapshot = this.data.snapshot;
     const draftToken = op === "add" ? this.draft.capture(context) : null;
+    const editToken = op === "edit" ? this.editDraft : null;
     this.busy = true; this.error = null; this.notice = null;
     cx.spawn(async cx => {
       try {
         const data = await this.request({ op, scope: snapshot.scope, view: snapshot.view ?? { file: this.open, context: this.contextLines }, ...(["resolve", "read"].includes(op) ? {} : { revision: snapshot.revision }), ...details });
+        if (editToken) {
+          if (editToken.editor.value() === details.body) this.edits.delete(context);
+          else editToken.expected_body = details.body.trim();
+        }
         if (contextKey() !== context) {
           if (draftToken) this.draft.complete(draftToken, this.context);
           return;
         }
         if (op === "export") { this.exportText = data.text; this.output.set_value(data.text); }
         else { this.data = data; this.prepareSyntax(data.snapshot); }
-        if (draftToken) { this.draft.complete(draftToken, this.context); this.activeComment = null; this.notice = "Comment saved. It is ready to send with your review."; }
+        if (draftToken) { this.draft.complete(draftToken, this.context); this.activeComment = null; this.activeCommentIds = null; this.notice = "Comment saved. It is ready to send with your review."; }
+        if (editToken) this.notice = "Comment updated.";
         if (contextKey() !== context) return;
         if (op === "send") {
-          this.notice = `Feedback submitted to the open session (${details.target}). Sent notes remain in this review.`;
+          this.notice = `Feedback submitted to the open session (${details.target}). Sent comments are saved under Show sent/resolved.`;
           if (data.github) this.github = data.github;
           this.threadQueue.clear();
           if (agents().some(agent => agent.address === details.target)) run("pane.focus", { terminal: details.target });
@@ -309,7 +418,7 @@ export default class Annotator extends View {
   }
 
   sendToSession(cx, thread = null) {
-    if (this.busy || this.snapshotError || !this.data || contextKey() !== this.context || this.editor.value().trim()) return;
+    if (this.busy || this.snapshotError || !this.data || contextKey() !== this.context || this.hasDraft()) return;
     const threads = thread ? [{ id: thread.id, fingerprint: thread.fingerprint }] : [...this.threadQueue.values()];
     if (!thread && !pendingComments(this.data.comments).length && !threads.length) return;
     const target = this.currentSession();
@@ -330,7 +439,7 @@ export default class Annotator extends View {
   }
 
   changeComparison(mode, base, cx, explicit = undefined) {
-    if (this.busy || this.editor.value().trim()) { this.notice = "Save or cancel your draft before changing comparison."; cx.notify(); return; }
+    if (this.busy || this.hasDraft()) { this.notice = "Save or cancel your draft before changing comparison."; cx.notify(); return; }
     this.baseExplicit = explicit ?? (base !== this.base ? Boolean(base) : this.baseExplicit);
     this.mode = mode; this.base = base; this.baseOpen = false; this.scopeMenuOpen = false; this.selection = null;
     this.rememberFull({ mode });
@@ -339,7 +448,7 @@ export default class Annotator extends View {
       const scope = location().scope, key = JSON.stringify([scope.machine ?? null, scope.repo]);
       setShared("annotator.baseRefs", { ...(shared("annotator.baseRefs") ?? {}), [key]: { base: null, explicit: false } });
     }
-    this.activeComment = null; this.composerOpen = false;
+    this.activeComment = null; this.activeCommentIds = null; this.composerOpen = false;
     this.data = null;
     this.refresh(cx);
   }
@@ -351,7 +460,7 @@ export default class Annotator extends View {
 
   openFull(cx) {
     if (!this.data || this.busy || this.openingFull) return;
-    if (this.editor.value().trim()) { this.notice = "Save or cancel your draft before opening full review."; cx.notify(); return; }
+    if (this.hasDraft()) { this.notice = "Save or cancel your draft before opening full review."; cx.notify(); return; }
     const current = location(), snapshot = this.data.snapshot, target = this.currentSession();
     const args = { name: `Review · ${snapshot.branch ?? "changes"}`, space: current.space,
       mod: "annotator", props: { presentation: "full", scope: snapshot.scope,
@@ -492,14 +601,14 @@ export default class Annotator extends View {
 
   selectFile(path, cx) {
     if (this.busy) return;
-    if (this.editor.value().trim()) { this.notice = "Save or cancel your draft before selecting another file."; cx.notify(); return; }
-    this.open = path; this.draft.reset(); this.activeComment = null; this.notice = null; this.view = "diff"; this.refresh(cx); cx.notify();
+    if (this.hasDraft()) { this.notice = "Save or cancel your draft before selecting another file."; cx.notify(); return; }
+    this.open = path; this.draft.reset(); this.activeComment = null; this.activeCommentIds = null; this.notice = null; this.view = "diff"; this.refresh(cx); cx.notify();
   }
 
   selectLine(row, event, cx) {
-    if (this.busy) return;
+    if (this.busy || this.editDraft || this.questionDraft) return;
     this.draft.anchor(selectionFor(this.selection, row, event?.modifiers?.shift), this.data?.snapshot.revision);
-    this.activeComment = null; this.composerOpen = true;
+    this.activeComment = null; this.activeCommentIds = null; this.composerOpen = true;
     this.exportText = null; this.notice = null; this.editor.focus(); cx.notify();
   }
 
@@ -522,17 +631,30 @@ export default class Annotator extends View {
         .child(this.badge(comment.read ? "Read" : "Unread", comment.read ? t.dim : t.accent))
         .child(div().flex_1().text_size(11).text_color(t.muted).child(commentLocation(comment)))
         .child(this.badge(status.label, color, color + "18")))
-      .child(div().text_size(13).text_color(t.foreground).child(comment.body))
+      .when(this.editDraft?.id !== comment.id, el => el.child(div().text_size(13).text_color(t.foreground).child(comment.body)))
+      .when(this.editDraft?.id === comment.id, el => el.child(v_flex().gap(5)
+        .child(Textarea.new(this.editDraft.editor).h(70).w_full())
+        .child(h_flex().gap(4)
+          .child(this.button(`cancel-edit-${comment.id}`, "Cancel", cx => { this.edits.delete(this.context); cx.notify(); }))
+          .child(this.button(`save-edit-${comment.id}`, "Save changes", cx => this.saveEdit(cx), Boolean(this.editDraft.editor.value().trim()), "primary")))))
       .when(comment.stale && !comment.resolved && !comment.delivery, el => el.child(div().text_size(11).text_color(t.ansi3)
         .child("Code changed. This comment will not be sent. Add a new comment on the current lines.")))
       .when(comment.delivery === "uncertain", el => el.child(div().text_size(11).text_color(t.ansi3)
         .child("Check the chat before sending again; it may already have received this comment.")))
       .child(h_flex().gap(4).justify_end()
-        .child(this.button(`read-${comment.id}`, comment.read ? "Mark unread" : "Mark read", cx => this.act("read", { id: comment.id, read: !comment.read }, cx)))
+        .when(!comment.resolved && !comment.delivery, el => el
+          .child(this.button(`edit-${comment.id}`, "Edit", cx => this.beginEdit(comment, cx), !this.hasDraft()))
+          .child(this.button(`delete-${comment.id}`, "Delete…", cx => { this.deleting = comment.id; cx.notify(); }, !this.hasDraft())))
+        .child(this.button(`read-${comment.id}`, comment.read ? "Mark unread" : "Mark read", cx => this.act("read", { id: comment.id, read: !comment.read }, cx), !this.editDraft))
         .when(Boolean(comment.delivery) && !comment.resolved, el => el.child(this.button(`requeue-${comment.id}`, "Send again…", cx => {
           this.requeue = this.requeue === comment.id ? null : comment.id; cx.notify();
         })))
-        .child(this.button(`resolve-${comment.id}`, comment.resolved ? "Reopen" : "✓ Resolve", cx => this.act("resolve", { id: comment.id, resolved: !comment.resolved }, cx), true, "secondary")))
+        .child(this.button(`resolve-${comment.id}`, comment.resolved ? "Reopen" : "✓ Resolve", cx => this.act("resolve", { id: comment.id, resolved: !comment.resolved }, cx), !this.editDraft, "secondary")))
+      .when(this.deleting === comment.id, el => el.child(h_flex().gap(4)
+        .child(this.button(`cancel-delete-${comment.id}`, "Keep comment", cx => { this.deleting = null; cx.notify(); }))
+        .child(this.button(`confirm-delete-${comment.id}`, "Delete permanently", cx => {
+          this.deleting = null; this.act("delete", { id: comment.id, expected_body: comment.body }, cx);
+        }, !this.hasDraft(), "secondary"))))
       .when(this.requeue === comment.id, el => el.child(v_flex().gap(4)
         .child(div().text_size(11).text_color(t.ansi3).child("Requeue only after checking the chat. This can duplicate feedback."))
         .child(this.button(`confirm-requeue-${comment.id}`, "Confirm requeue", cx => {
@@ -573,6 +695,11 @@ export default class Annotator extends View {
         .when(active, el => el.bg(t.selected))
         .when(selectable, el => el.cursor_pointer().hover(s => s.bg(t.hover))
           .on_click((event, cx) => this.selectLine(row, event, cx)))
+        .when(selectable || row.kind === "hunk", el => el.on_mouse_down("right", (_event, cx) => {
+          cx.stop_propagation();
+          this.beginQuestion(row.kind === "hunk" ? { kind: "hunk", row: i }
+            : { kind: "selection", selection: selectionPayload(selectionFor(null, row)) }, cx);
+        }))
         .child(div().w(29).flex_none().text_right().text_color(active ? t.accent : t.dim).child(row.old == null ? "" : String(row.old)))
         .child(div().w(29).flex_none().text_right().text_color(active ? t.accent : t.dim).child(row.new == null ? "" : String(row.new)))
         .child(div().w(10).flex_none().text_color(row.kind === "add" ? t.ansi2 : row.kind === "delete" ? t.ansi1 : t.dim)
@@ -585,6 +712,7 @@ export default class Annotator extends View {
   render(cx) {
     this.syncSidebar();
     if (contextKey() !== this.context && !this.busy) this.refresh(cx);
+    this.consumeOpenRequest(cx);
     if (contextKey() === this.context && this.machineUnavailable(location().scope) && !this.snapshotError) {
       this.snapshotFailed(`Machine ${location().scope.machine} is unavailable`, location().scope);
     }
@@ -610,7 +738,7 @@ export default class Annotator extends View {
     const selection = this.selection;
     const canSave = Boolean(file && this.editor.value().trim() && !this.needsSelection);
     const summary = reviewSummary(comments);
-    const hasDraft = Boolean(this.editor.value().trim());
+    const hasDraft = this.hasDraft();
     const source = file ? pathParts(file.path) : null;
     const stats = file ? fileStats(file) : null;
     const chat = target?.program?.name ?? (target?.app === "opencode" ? "OpenCode" : target?.app) ?? "Agent";
@@ -637,11 +765,12 @@ export default class Annotator extends View {
         .when(this.view === "diff", el => el.child(this.button("toggle-files", `${this.filesOpen ? "▾" : "▸"} Files · ${data ? files.length : "—"}`, cx => { this.filesOpen = !this.filesOpen; cx.notify(); })))
         .when(this.view !== "diff", el => el.child(this.button("filter-unread", this.onlyUnread ? "● Unread only" : "All comments", cx => { this.onlyUnread = !this.onlyUnread; cx.notify(); })))
         .child(div().flex_1().min_w(0))
-        .child(this.button("scope-menu", `${this.mode === "branch" ? "Branch" : "Uncommitted"} ▾`, cx => { this.scopeMenuOpen = !this.scopeMenuOpen; this.baseOpen = false; cx.notify(); }, true, "secondary"))
+        .child(this.button("scope-menu", `${this.mode === "branch" ? "Branch" : this.mode === "last_commit" ? "Last commit" : "Uncommitted"} ▾`, cx => { this.scopeMenuOpen = !this.scopeMenuOpen; this.baseOpen = false; cx.notify(); }, true, "secondary"))
         .when(this.mode === "branch", el => el.child(this.button("choose-base", `${this.baseLabel()} ▾`, cx => { this.baseOpen = !this.baseOpen; this.scopeMenuOpen = false; cx.notify(); })
           .flex_shrink(1).min_w(0).max_w(145).truncate().tooltip(this.base ?? "Choose base branch"))))
       .when(this.scopeMenuOpen, el => el.child(h_flex().id("scope-options").px(8).gap(4).bg(t.chrome)
         .child(this.button("scope-uncommitted", "Uncommitted", cx => this.changeComparison("uncommitted", null, cx), true, this.mode === "uncommitted" ? "secondary" : "quiet"))
+        .child(this.button("scope-last-commit", "Last commit", cx => this.changeComparison("last_commit", null, cx), Boolean(data?.snapshot.head), this.mode === "last_commit" ? "secondary" : "quiet"))
         .child(this.button("scope-branch", "Branch", cx => this.changeComparison("branch", this.base, cx), true, this.mode === "branch" ? "secondary" : "quiet"))))
       .when(this.baseOpen, el => el.child(v_flex().id("review-bases").h(140).overflow_y_scrollbar()
         .child(this.button("base-auto", "Auto · prefer local develop", cx => this.changeComparison("branch", null, cx, false)))
@@ -666,7 +795,10 @@ export default class Annotator extends View {
           .child(h_flex().gap(4)
             .child(this.button("context-more", "+20 context", cx => this.expandContext(Math.min(1000000, this.contextLines + 20), cx), this.contextLines < 1000000))
             .child(this.button("context-all", "Full context", cx => this.expandContext(1000000, cx), this.contextLines < 1000000))
-            .child(this.button("context-reset", "Collapse", cx => this.expandContext(3, cx), this.contextLines > 3)))))
+            .child(this.button("context-reset", "Collapse", cx => this.expandContext(3, cx), this.contextLines > 3)))
+          .child(h_flex().gap(4)
+            .child(this.button("ask-file", "Ask about diff", cx => this.beginQuestion({ kind: "file" }, cx), !hasDraft && file?.loaded && !file?.truncated))
+            .when(Boolean(selection), el => el.child(this.button("ask-selection", "Ask about selection", cx => this.beginQuestion({ kind: "selection", selection: selectionPayload(selection) }, cx), !hasDraft))))))
         .child(v_flex().id("review-diff").flex_1().min_h(0).overflow_y_scrollbar().children([
           ...(file?.note ? [div().m(8).p(8).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child(file.note)] : []),
           ...(file ? this.codeRows(file, comments, t) : [v_flex().p(18).gap(7)
@@ -679,7 +811,7 @@ export default class Annotator extends View {
         .children(listedComments.map(c => this.commentCard(c, t, true)))
         .when(!listedComments.length, el => el.child(v_flex().p(18).gap(8)
           .child(div().font_semibold().child(allComments.length ? "No comments match these filters" : "Your review starts with a comment"))
-          .child(div().text_size(12).text_color(t.muted).child(allComments.length ? "Show resolved or turn off Unread only to see saved notes." : "Choose a file in Code, select a line, and write what should change. Save several comments, then send them together."))))))
+          .child(div().text_size(12).text_color(t.muted).child(allComments.length ? "Show sent/resolved or turn off Unread only to see saved notes." : "Choose a file in Code, select a line, and write what should change. Save several comments, then send them together."))))))
       .when(this.view === "github", el => el.child(v_flex().id("review-github").flex_1().min_h(0).overflow_y_scrollbar()
         .child(div().p(10).text_size(11).text_color(t.muted).child(this.githubBusy ? "Checking GitHub…" : this.github?.error ? "GitHub unavailable · local reviews still work" : this.github?.pull_request ? `${this.github.pull_request.url} · polls every 5 minutes` : "No open PR found for this branch. Refresh checks GitHub now."))
         .when(Boolean(this.github?.error), el => el.child(div().p(10).text_color(t.ansi3).child(this.github.error)))
@@ -699,6 +831,7 @@ export default class Annotator extends View {
             this.cancelDraft(cx);
           })))
           .child(this.button("save-note", "+ Save comment", cx => this.saveComment(cx), canSave, "primary").tooltip("Save comment · ⌘Enter / Ctrl+Enter")))))))
+      .when(Boolean(this.questionDraft), el => el.child(this.questionComposer()))
       .when(Boolean(this.exportText), el => el.child(v_flex().mx(8).mb(8).p(8).gap(4).rounded(7).bg(t.surface).border_1().border_color(t.border).flex_none()
         .child(div().text_size(11).text_color(t.muted).child("Review text · select and copy"))
         .child(Textarea.new(this.output).h(95).w_full()).child(this.button("close-export", "Close", cx => { this.exportText = null; cx.notify(); }))))

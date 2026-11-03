@@ -43,6 +43,10 @@ python3 scripts/install.py --layout task-groups
 ```
 
 The usual **Changes** button then opens Annotator, beside the current chat.
+The adjacent **↗** opens full review directly, without opening the sidebar.
+Setup installs a private `annotator-tabs` copy based on the shipped tabs mod;
+shipped files stay untouched. Rerun with the same `--layout` to update it.
+Unsupported tabs versions and locally edited private copies are refused.
 This opt-in backs up the layout. Shipped layouts are refused. Herdr hot reloads
 mod/layout changes; no service restart. `HERDR_APP_HOME` selects another app home.
 
@@ -189,10 +193,45 @@ lexer, not a full language grammar. Unsupported languages and extreme lines
 stay plain. Large compact-sidebar previews also stay plain to keep rendering
 bounded; full review colors only the visible rows.
 
+### Edit, delete, and quick questions
+
+Use **Edit** on a saved local comment, or click its inline card in full review.
+When several notes share a line, clicking their group opens individual action
+cards; choose **Edit** on the note you want. Saving and filtering notes keep
+the native source-list slots stable so the diff retains its reading position.
+Save with **Save changes** or **⌘Enter / Ctrl+Enter**. Editing changes the body,
+not its source anchor. Annotator checks the previous body before saving, so
+another panel's edit cannot be overwritten without a refresh.
+**Delete… → Delete permanently** removes an open, unsent local comment. Sent,
+uncertain, and resolved notes keep their history; reopen a resolved note first.
+Comment edits and question drafts stay in memory per checkout while the mod is
+loaded. Save edits before reloading the mod.
+
+**Last commit** compares the working tree against `HEAD^`: the latest commit
+plus staged, unstaged, and untracked work. A root commit compares against the
+empty tree; an unborn checkout has no Last commit scope. Notes stay separate
+from Branch and Uncommitted reviews. The full view remembers this choice.
+
+Right-click a line or hunk header to open a question composer. Select a range
+and choose **Ask selection**, or use **Ask about diff** for the open file.
+Questions require a complete loaded preview and carry its revision, path,
+diff side, and source rows. Only **Send question** or the question editor's
+**⌘Enter / Ctrl+Enter** sends; plain Enter stays multiline. Sending does not
+include or mark your saved review comments delivered.
+
+The recipient must be the source chat and idle. A durable receipt records
+uncertainty before sending. Reopening the same question does not automatically
+retry it. If confirmation is lost, check the chat, then use **I checked chat ·
+Send again** with the original text and recipient. Confirmed identical questions
+against the same snapshot return their receipt instead of sending twice.
+
 ### Read and unread
 
-Resolved local comments and GitHub threads are hidden by default, including
-inline notes and file badges. **Show resolved** reveals them; **Hide resolved**
+Resolved comments and confirmed-sent local comments/GitHub threads are hidden
+by default, including inline notes and file badges. Sending hides delivered
+items immediately; failed or uncertain delivery stays visible. This does not
+resolve threads on GitHub or claim the code is fixed.
+**Show sent/resolved** reveals history; **Hide sent/resolved**
 hides them again. This choice is shared by the sidebar and full review and
 survives restarts. Notes remain saved, and local notes can still be reopened.
 The visibility filter never changes Send eligibility.
@@ -204,7 +243,53 @@ Reading never resolves a comment, marks it delivered, or excludes it from Send.
 GitHub read markers apply to an exact thread version; new replies become unread.
 No read action writes to GitHub. New comments and older stores start unread.
 
-### GitHub review threads
+## Commands and open-file API
+
+These commands target a loaded Annotator view. They obey the same draft,
+snapshot, recipient, and idle-agent checks as the buttons:
+
+| Command | Action |
+| --- | --- |
+| `annotator.submit` | Send saved review comments and queued GitHub threads |
+| `annotator.ask` | Open a question for the selection, or the current file |
+| `annotator.scope` | Cycle Uncommitted → Last commit → Branch |
+| `annotator.refresh` | Refresh the diff and GitHub threads |
+| `annotator.full` | Open a pinned full-review tab |
+
+No shortcuts are installed globally. Add your preferred keys under `global` in
+Herdr's `keys.json`, for example:
+
+```json
+{
+  "global": {
+    "cmd-alt-a": "annotator.ask",
+    "cmd-alt-r": "annotator.refresh"
+  }
+}
+```
+
+Another mod can request a changed file with a one-shot shared value:
+
+```js
+setShared("annotator.open", {
+  id: `${Date.now()}-${Math.random()}`,
+  at: Date.now(),
+  path: "/absolute/path/to/checkout/src/file.js",
+  on: null, // Herdr machine name for SSH files, null for local files.
+});
+run("layout.select", { stack: "panel-body", child: "changes" });
+run("layout.show", { id: "panel" });
+```
+
+Focus the target checkout first. Annotator refreshes before selecting the file
+and keeps the current comparison scope. Requests wait during work or an unsaved
+draft, or while another checkout/machine is shown. A request expires after 30
+seconds; a missing timestamp, relative path, or path containing `.` / `..`
+segments is invalid. A newer request survives an older refresh. A file without
+a diff produces a message and leaves the existing file selected. The API never
+sends a message or changes a draft.
+
+## GitHub review threads
 
 The **GitHub** tab discovers the open PR matching this checkout's branch and
 origin/upstream repository on github.com. It uses local `gh` credentials,

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, visibleComments, unreadItems, snapshotFailure } from "../mods/annotator/review.js";
+import { selectionFor, selectionPayload, selected, inlineAt, pendingComments, sessionTarget, fileStats, pathParts, commentStatus, commentLocation, reviewSummary, sendHint, visibleComments, unreadItems, snapshotFailure, diffReaderEntries, splitRows } from "../mods/annotator/review.js";
 
 test("ordinary folders are a distinct empty-checkout state, including remote diagnostics", () => {
   const diagnostic = "fatal: not a git repository (or any of the parent directories): .git";
@@ -76,6 +76,37 @@ test("comments attach to the correct diff side and only current notes export", (
   assert.equal(inlineAt(note, { new: 3 }), false);
   assert.equal(inlineAt({ ...note, stale: true }, { old: 3 }), false);
   assert.equal(pendingComments([note, { ...note, resolved: true }, { ...note, delivery: "uncertain" }, { ...note, stale: true }]).length, 1);
+});
+
+test("confirmed sends hide with resolved history; uncertain and failed delivery stay visible", () => {
+  const items = [
+    { id: "ready", resolved: false, delivery: null },
+    { id: "sent", resolved: false, delivery: "sent" },
+    { id: "uncertain", resolved: false, delivery: "uncertain" },
+    { id: "resolved", resolved: true, delivery: null },
+  ];
+  assert.deepEqual(visibleComments(items).map(c => c.id), ["ready", "uncertain"]);
+  assert.equal(visibleComments(items, true), items);
+  assert.deepEqual(pendingComments(items).map(c => c.id), ["ready"]);
+  assert.equal(items[1].resolved, false, "hiding does not claim the feedback was fixed");
+});
+
+for (const split of [false, true]) test(`${split ? "split" : "unified"} reader keeps stable native slots across comment changes`, () => {
+  const source = [{ kind: "delete", old: 2, new: null, text: "old" }, { kind: "add", old: null, new: 2, text: "new" }];
+  const rows = split ? splitRows(source) : source;
+  const comments = [
+    { id: "file", position: null },
+    { id: "old", position: { side: "old", start: 2, end: 2 } },
+    { id: "new", position: { side: "new", start: 2, end: 2 } },
+    { id: "same-line", position: { side: "new", start: 2, end: 2 } },
+    { id: "stale", stale: true, position: null },
+  ];
+  const keys = items => diffReaderEntries(rows, items, split).map(entry => entry.key);
+  assert.deepEqual(keys([]), keys(comments));
+  assert.deepEqual(keys(comments), keys(comments.slice(1)), "deleting a note cannot splice the source list");
+  const entries = diffReaderEntries(rows, comments, split);
+  assert.deepEqual(entries.flatMap(entry => entry.comments ?? []).map(c => c.id), comments.map(c => c.id));
+  assert.equal(entries.length, 2 * rows.length + 1);
 });
 
 test("presentation separates ready, outdated, sent and resolved comments", () => {

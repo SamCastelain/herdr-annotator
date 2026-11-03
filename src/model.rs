@@ -22,6 +22,7 @@ pub enum DiffMode {
     #[default]
     Uncommitted,
     Branch,
+    LastCommit,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +88,36 @@ pub enum Request {
         #[serde(default)]
         view: ViewSpec,
     },
+    Edit {
+        scope: Scope,
+        revision: String,
+        id: String,
+        expected_body: String,
+        body: String,
+        #[serde(default)]
+        view: ViewSpec,
+    },
+    Delete {
+        scope: Scope,
+        revision: String,
+        id: String,
+        expected_body: String,
+        #[serde(default)]
+        view: ViewSpec,
+    },
+    Ask {
+        scope: Scope,
+        revision: String,
+        target: String,
+        question_id: String,
+        path: String,
+        context: QuestionContext,
+        body: String,
+        #[serde(default)]
+        retry: bool,
+        #[serde(default)]
+        view: ViewSpec,
+    },
     Resolve {
         scope: Scope,
         id: String,
@@ -149,6 +180,9 @@ impl Request {
         match self {
             Self::Snapshot { scope, .. }
             | Self::Add { scope, .. }
+            | Self::Edit { scope, .. }
+            | Self::Delete { scope, .. }
+            | Self::Ask { scope, .. }
             | Self::Resolve { scope, .. }
             | Self::Read { scope, .. }
             | Self::GithubRead { scope, .. }
@@ -162,6 +196,9 @@ impl Request {
         match self {
             Self::Snapshot { view, .. }
             | Self::Add { view, .. }
+            | Self::Edit { view, .. }
+            | Self::Delete { view, .. }
+            | Self::Ask { view, .. }
             | Self::Resolve { view, .. }
             | Self::Read { view, .. }
             | Self::Export { view, .. }
@@ -174,6 +211,14 @@ impl Request {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QuestionContext {
+    File,
+    Selection { selection: Selection },
+    Hunk { row: usize },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub scope: Scope,
     pub branch: Option<String>,
@@ -183,6 +228,7 @@ pub struct Snapshot {
     pub limited: bool,
     pub bases: Vec<String>,
     pub merge_base: Option<String>,
+    pub baseline: Option<String>,
     pub view: ViewSpec,
 }
 

@@ -11,7 +11,7 @@ import tempfile
 import time
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--output", required=True, help="Directory for preview.png, github-replies.png, sidebar.png")
+parser.add_argument("--output", required=True, help="Directory for native README screenshots")
 args = parser.parse_args()
 if not shutil.which("sips"):
     parser.error("This capture script requires macOS sips for cropping")
@@ -20,7 +20,7 @@ output.mkdir(parents=True, exist_ok=True)
 root = Path(__file__).resolve().parents[1]
 source = root / "mods/annotator"
 app_home = Path(os.environ.get("HERDR_APP_HOME", Path.home() / ".config/herdr-app"))
-driver = Path(tempfile.mkdtemp(prefix="annotator-catalog-", dir=app_home / "mods"))
+drivers = []
 scope = {"repo": "/workspace/payments", "machine": None, "comparison": {"mode": "branch", "base": "main"}}
 rows = [{"kind": "hunk", "old": None, "new": None, "text": "@@ -1,8 +1,13 @@"}]
 lines = [
@@ -49,7 +49,7 @@ comments = [
     {"id": "tests", "path": paths[2], "body": "Cover the maximum fee as well as the smallest payment.",
      "resolved": False, "read": True, "stale": False, "delivery": None, "position": None},
 ]
-data = {"snapshot": {"scope": scope, "branch": "feature/payment-rounding", "revision": "demo-v1", "files": files,
+data = {"snapshot": {"scope": scope, "branch": "feature/payment-rounding", "head": "demo-head", "revision": "demo-v1", "files": files,
                      "limited": False, "bases": ["main", "develop"], "view": {"file": paths[0], "context": 3}}, "comments": comments}
 threads = [
     {"id": "rounding-thread", "fingerprint": "demo-thread-v1", "path": paths[0], "line": 6, "side": "RIGHT",
@@ -69,36 +69,61 @@ base = base.replace("this.syncSidebar();", "")
 base = base.replace("setShared(", "screenshotSetShared(") + "\nfunction screenshotSetShared() {}\n"
 
 try:
-    for item in source.glob("*.js"):
-        if item.name != "main.js":
-            script = item.read_text().replace("setShared(", "screenshotSetShared(")
-            (driver / item.name).write_text(script + "\nfunction screenshotSetShared() {}\n")
-    for variant, name, width in [("full", "preview.png", 1280), ("github", "github-replies.png", 1280), ("sidebar", "sidebar.png", 440)]:
+    variants = [("full", "preview.png", 1440), ("github", "github-replies.png", 1280),
+                ("sidebar", "sidebar.png", 440), ("scope", "scope-picker.png", 440),
+                ("comment", "comment.png", 1440), ("sent", "sent.png", 1440), ("ask", "ask.png", 1440)]
+    for variant, name, width in variants:
+        driver = Path(tempfile.mkdtemp(prefix=f"annotator-catalog-{variant}-", dir=app_home / "mods"))
+        drivers.append(driver)
+        for item in source.glob("*.js"):
+            if item.name != "main.js":
+                script = item.read_text().replace("setShared(", "screenshotSetShared(")
+                (driver / item.name).write_text(script + "\nfunction screenshotSetShared() {}\n")
         seed = "\n".join([
             "this.context = contextKey(); this.data = " + json.dumps(data) + ";",
             "this.github = " + json.dumps(github) + ";",
-            "this.full = " + json.dumps(variant != "sidebar") + "; this.view = " + json.dumps("github" if variant == "github" else "diff") + ";",
+            "this.full = " + json.dumps(variant not in {"sidebar", "scope"}) + "; this.view = " + json.dumps("github" if variant == "github" else "diff") + ";",
             "this.open = 'src/payments/fees.ts'; this.mode = 'branch'; this.base = 'main'; this.baseExplicit = true;",
             "this.filesOpen = true; this.commentsOpen = false; this.onlyUnread = false; this.diffStyle = 'split'; this.syntax = true;",
             "this.fullWidths = [230,1050]; this.sizes = [190,420,190]; this.prepareSyntax(this.data.snapshot);",
             "this.refresh = () => {}; this.refreshGithub = () => {}; this.rememberFull = () => {}; this.rememberBase = () => {};",
             "this.currentSession = () => ({address:'demo-agent',status:'idle',app:'opencode'});",
             "this.openFull = () => {};",
+            "this.consumeOpenRequest = () => {}; this.handleCommand = () => {}; this.sendQuestion = () => {}; this.sendToSession = () => {};",
+            "Object.defineProperty(this, 'showResolved', { get: () => false });",
             "this.request = async () => { throw new Error('Screenshot fixture: writes and network access are disabled'); };",
         ])
         if variant == "github":
             seed += "\nthis.beginGithubReply(this.github.threads[0], cx); [...this.githubDrafts.values()][0].editor.set_value('Added the one-cent case and capped the maximum fee. The updated tests cover both boundaries.');"
+        elif variant == "scope":
+            seed += "\nthis.scopeMenuOpen = true;"
+        elif variant == "comment":
+            seed += "\nthis.draft.anchor({side:'new',start:6,end:7,origin:6}, 'demo-v1'); this.editor.set_value('Please test the smallest payment and the maximum fee cap.');"
+        elif variant == "sent":
+            seed += "\nthis.data.comments = this.data.comments.map(c => ({...c, delivery:'sent'})); this.notice = 'Feedback submitted to the source session. Sent comments are saved under Show sent/resolved.';"
+        elif variant == "ask":
+            seed += "\nthis.beginQuestion({kind:'selection',selection:{side:'new',start:6,end:7}}, cx); this.questionDraft.editor.set_value('Why do we round up here, rather than use Math.round?');"
         (driver / "mod.json").write_text(json.dumps({"place": "none", "overlay": {"width": width, "height": 800}}))
         (driver / "main.js").write_text(base.replace("this.refresh(cx);", seed, 1))
         subprocess.run(["herdr-app", "check", str(driver)], check=True)
+        time.sleep(1.5)  # Let Herdr discover this fresh mod before opening it.
         subprocess.run(["herdr-app", "do", "mod.open", json.dumps({"name": driver.name})], check=True)
+        def shown():
+            status = json.loads(subprocess.check_output(["herdr-app", "status"]))
+            return driver.name in json.dumps(status.get("overlays", []))
         try:
-            time.sleep(0.8)  # Let the native overlay lay out and draw its first frame.
+            time.sleep(1.5)  # Let the native overlay lay out and draw its first frame.
+            if not shown():
+                raise RuntimeError("Demo overlay is not shown; refusing to capture the live workspace")
             raw = output / f"{variant}-raw.png"
             subprocess.run(["herdr-app", "shot", str(raw)], check=True)
+            if not shown():
+                raise RuntimeError("Demo overlay closed during capture; refusing to publish the frame")
             subprocess.run(["sips", "--cropToHeightWidth", "800", str(width), str(raw), "--out", str(output / name)], check=True)
         finally:
-            subprocess.run(["herdr-app", "do", "mod.open", json.dumps({"name": driver.name})], check=True)
+            if shown():
+                subprocess.run(["herdr-app", "do", "mod.open", json.dumps({"name": driver.name})], check=True)
 finally:
-    shutil.rmtree(driver)  # Only this invocation's newly created, inert mod.
+    for driver in drivers:
+        shutil.rmtree(driver)  # Only this invocation's newly created, inert mods.
 print(f"Saved native screenshots to {output}")

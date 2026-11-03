@@ -1,3 +1,18 @@
+export function reviewLocation(fixed, focus, spaceList, paneList, agentList) {
+  if (fixed?.scope) return { scope: fixed.scope, space: fixed.space ?? null, tab: fixed.tab ?? null };
+  const f = focus;
+  const space = spaceList.find(s => s.id === f?.space) ?? spaceList.find(s => s.active);
+  const tabs = new Set((space?.tabs ?? []).filter(t => t.active).map(t => t.id));
+  const allTabs = new Set((space?.tabs ?? []).map(t => t.id));
+  if (f?.pane === null && f?.terminal && f?.cwd) {
+    const machine = f.terminal.includes("/") ? f.terminal.split("/")[0] : null;
+    const owner = agentList.find(a => a.address === f.terminal);
+    return { scope: { repo: f.cwd, machine }, space: owner?.space ?? null, tab: owner?.tab ?? f.tab ?? null };
+  }
+  const pane = paneList.find(p => p.pane === f?.pane && p.terminal) ?? paneList.find(p => tabs.has(p.tab) && p.cwd) ?? paneList.find(p => allTabs.has(p.tab) && p.cwd);
+  return { scope: { repo: pane?.cwd || space?.folder || "", machine: space?.machine ?? null }, space: space?.id ?? null, tab: f?.tab ?? space?.tabs?.find(t => t.active)?.id ?? null };
+}
+
 export function selectionFor(previous, row, extend = false) {
   const side = row.new != null ? "new" : row.old != null ? "old" : null;
   if (!side) return previous;
@@ -90,7 +105,7 @@ export function splitRows(rows) {
   for (let i = 0; i < rows.length;) {
     const row = rows[i];
     if (row.kind !== "delete" && row.kind !== "add") {
-      result.push({ kind: row.kind, text: row.text,
+      result.push({ kind: row.kind, text: row.text, sourceIndex: i,
         old: row.old == null ? null : row, new: row.new == null ? null : row });
       i++; continue;
     }
@@ -117,7 +132,7 @@ export function unreadItems(items, onlyUnread) {
 
 // Presentation only: saved state and delivery eligibility use the full review.
 export function visibleComments(items, showResolved = false) {
-  return showResolved ? items : items.filter(item => !item.resolved);
+  return showResolved ? items : items.filter(item => !item.resolved && item.delivery !== "sent");
 }
 
 export function diffEntries(rows, comments, split) {
@@ -142,6 +157,19 @@ export function diffEntries(rows, comments, split) {
   });
   // Outdated notes and anchors outside collapsed context remain visible.
   for (const comment of comments) if (!placed.has(comment.id)) note(comment);
+  return entries;
+}
+
+// gpui-shell 0.7.1 replaces the entire measured list when its count changes,
+// which sends the viewport back to the first item. Reserve one notes slot per
+// source row (and one before the file), even when empty. Saving, hiding or
+// deleting notes changes a slot's contents, never the native collection.
+export function diffReaderEntries(rows, comments, split) {
+  const entries = [{ key: "notes-before", comments: [] }];
+  for (const entry of diffEntries(rows, comments, split)) {
+    if (entry.row) entries.push(entry, { key: `notes-${entry.key}`, comments: [] });
+    else entries.at(-1).comments.push(entry.comment);
+  }
   return entries;
 }
 
@@ -181,7 +209,7 @@ export function reviewSidebarTransition(previous, focus, reviews, panel) {
 export function fullPreferences(value, legacy = {}) {
   const prefs = value ?? {};
   return {
-    mode: ["branch", "uncommitted"].includes(prefs.mode) ? prefs.mode : "branch",
+    mode: ["branch", "uncommitted", "last_commit"].includes(prefs.mode) ? prefs.mode : "branch",
     diffStyle: ["split", "unified"].includes(prefs.diffStyle) ? prefs.diffStyle : legacy.diffStyle === "unified" ? "unified" : "split",
     filesOpen: typeof prefs.filesOpen === "boolean" ? prefs.filesOpen : true,
     commentsOpen: typeof prefs.commentsOpen === "boolean" ? prefs.commentsOpen : legacy.commentsOpen === true,
@@ -215,7 +243,7 @@ export function snapshotFailure(error, machine) {
 
 export function needsFreshSnapshot(id) {
   return /^(?:save-note|full-save|send-review|full-send|export-review|full-export)$/.test(id)
-    || /^(?:resolve-|read-|requeue-|confirm-requeue-|fix-|reply-thread-|post-reply-|retry-reply-)/.test(id);
+    || /^(?:resolve-|read-|requeue-|confirm-requeue-|fix-|reply-thread-|post-reply-|retry-reply-|edit-|delete-|confirm-delete-|save-edit-|ask-|full-ask-|question-send$|question-retry$)/.test(id);
 }
 
 export function savedBaseChoice(value) {

@@ -1,32 +1,80 @@
 # Herdr Annotator
 
-A native code-review mod for **[Herdr App](https://herdr.dev)**. Compare branch
-or uncommitted changes in a sidebar or full review tab, leave comments on files
-or lines, and send your review to the agent working in that checkout. Read GitHub
-PR review threads, reply directly, or queue them for the agent to address.
-Works with local and SSH worktrees.
+A native code-review mod for **[Herdr App](https://herdr.dev)**. Review a branch,
+the last commit, or uncommitted work. Leave comments beside the code and send
+them to the agent working in that checkout. Read and reply to GitHub PR threads
+in the same workspace. Local and SSH worktrees supported.
 
 ![Full review with split diff and inline feedback](preview.png)
 
-![GitHub review threads and explicit reply composer](docs/images/github-replies.png)
+## Review → comment → send
+
+### 1. Pick what to review
+
+Click **Changes** for the sidebar, or the adjacent **↗** for a full review tab.
+The full view pins your checkout and source chat, with unified or side-by-side
+diffs, syntax colors, resizable panes, and expandable context.
+
+Choose **Uncommitted**, **Last commit** (plus uncommitted work), or **Branch**
+(since merge-base, including committed and uncommitted changes). Pick a local
+base ref, or use Auto, which prefers local `develop`. No automatic fetch.
+
+<img src="docs/images/scope-picker.png" alt="Changes sidebar with Uncommitted, Last commit, and Branch choices" width="440">
+
+### 2. Leave comments beside the code
+
+Click a line; Shift-click extends the range on the same diff side. Choose
+**Whole file** for a file note. Save with **⌘Enter / Ctrl+Enter** or the button.
+Add comments across files, click an inline comment to edit it in full view,
+or use **Edit** / **Delete…** on its card. Deletion asks for confirmation.
+
+![Selected code and a comment ready to save](docs/images/comment.png)
+
+Saved notes survive restarts. When code moves, Annotator re-anchors notes only
+to unique matching context. Outdated notes stay visible but do not enter a send.
+
+### 3. Send to the source session
+
+**Send review** submits saved comments and queued GitHub threads as one message,
+with file paths and source excerpts. It uses the chat in your source tab and
+requires an idle agent. It does not choose a chat in another tab or force text
+into a busy agent.
+
+After confirmed delivery, sent comments disappear from lists, diffs, and badges.
+**Show sent/resolved** reveals the history. Uncertain delivery stays visible;
+check the chat before an explicit retry.
+
+![Review after delivery, with sent comments hidden and recoverable](docs/images/sent.png)
+
+## Ask without drafting a review
+
+Right-click a source line or hunk header to ask about it. For a range, select it
+and click **Ask selection**; **Ask about diff** includes the open file's diff.
+Type your question, check the recipient, then **Send question**. Saved review
+comments stay untouched. Questions use the same idle-agent check and persist
+delivery uncertainty before sending.
 
 <details>
-<summary>Compact Changes sidebar</summary>
+<summary>Question composer</summary>
 
-<img src="docs/images/sidebar.png" alt="Compact Changes sidebar with file list and comment composer" width="440">
+![Question about selected lines, addressed to the source session](docs/images/ask.png)
 
 </details>
 
-Screenshots use disposable demo data.
+## Work through GitHub feedback
 
-## Features
+The **GitHub** tab reads PR review threads and polls for updates. **Fix thread**
+sends one thread to the source agent; **Add to review** queues it with your local
+notes. **Reply** opens a separate composer, and **Post to GitHub** posts as your
+signed-in `gh` account. Sending to the agent does not resolve threads on GitHub.
 
-- Changes sidebar and a full review tab with unified or split diffs.
-- Branch and uncommitted changes, local or over SSH. Auto base prefers local `develop`.
-- File and line comments, read/unread markers, resolve/reopen, and export.
-- Syntax coloring, expandable context, resizable panes, and large file lists.
-- GitHub review threads with refresh, polling, **Fix thread**, and explicit replies.
-- Saved view settings and **⌘Enter / Ctrl+Enter** to save a comment.
+![GitHub review threads and explicit reply composer](docs/images/github-replies.png)
+
+Read/unread markers and sent/resolved filters help you find remaining feedback.
+Export a review as text when you want to copy it elsewhere.
+
+Screenshots use inert demo data. The capture fixture cannot send messages or
+post replies.
 
 ## Install
 
@@ -52,15 +100,11 @@ python3 scripts/install.py --layout my-review
 
 For an existing personal layout, use its name instead. The installer backs up
 changes and refuses to overwrite locally edited mod files.
+It also installs a private tabs mod with **[Changes | ↗]**: Changes toggles the
+sidebar; ↗ opens full review directly. Shipped mods stay untouched. Rerun with
+the same `--layout` to update both integrations.
 
-## Use
-
-Open **Changes**, select a file, and click a line to comment. Shift-click selects
-a range. Save comments with the button or **⌘Enter / Ctrl+Enter**.
-
-Click **↗** for full review. It hides the duplicate sidebar and keeps the source
-checkout and agent binding. Click **Send review** to submit saved feedback to the
-idle agent, then return to its session.
+## Data and delivery
 
 Comments stay on your app machine. Git and GitHub review reads do not modify the
 repository. Only **Post to GitHub** posts a reply, as your signed-in `gh` account.
@@ -68,11 +112,19 @@ An unconfirmed post keeps its draft; check GitHub before explicitly retrying.
 **Send review submits with Enter**; check the chat
 before retrying uncertain delivery. Diff preview limits still apply.
 
+## Commands and integrations
+
+Bind `annotator.submit`, `annotator.ask`, `annotator.scope`, `annotator.refresh`,
+or `annotator.full` in Herdr's `keys.json`. No global keys change during install.
+Other mods can request a file's diff through `setShared("annotator.open", …)`.
+See the [command and open-file API reference](docs/guide.md#commands-and-open-file-api).
+
 ## Development
 
 ```sh
 cargo test --locked
 npm test # Node.js 22+
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 See the [user guide](docs/guide.md) and [mod recipe](RECIPE.md) for details.

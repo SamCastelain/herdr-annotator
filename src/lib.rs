@@ -3,6 +3,7 @@ mod github;
 mod model;
 mod preparation;
 mod process;
+mod question;
 mod store;
 
 pub use model::*;
@@ -117,6 +118,54 @@ impl Engine {
                 }
                 store.save()?;
             }
+            Request::Edit {
+                revision,
+                id,
+                expected_body,
+                body,
+                ..
+            } => {
+                snapshot.require_revision(&revision)?;
+                if body.trim().is_empty() || body.len() > 16_384 {
+                    return Err("Comment must contain 1–16384 bytes".into());
+                }
+                let comment = editable_comment(&mut store.comments, &id, &expected_body)?;
+                comment.body = body.trim().to_owned();
+                store.save()?;
+            }
+            Request::Delete {
+                revision,
+                id,
+                expected_body,
+                ..
+            } => {
+                snapshot.require_revision(&revision)?;
+                editable_comment(&mut store.comments, &id, &expected_body)?;
+                store.comments.retain(|c| c.id != id);
+                store.save()?;
+            }
+            Request::Ask {
+                revision,
+                target,
+                question_id,
+                path,
+                context,
+                body,
+                retry,
+                ..
+            } => {
+                snapshot.require_revision(&revision)?;
+                if question_id.is_empty()
+                    || question_id.len() > 100
+                    || !question_id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return Err("Invalid question identifier".into());
+                }
+                let text = question::text(snapshot, &path, &context, &body)?;
+                return question::send(&self.state_dir, snapshot, &target, &text, retry);
+            }
             Request::Read { id, read, .. } => {
                 let comment = store
                     .comments
@@ -208,6 +257,27 @@ impl Engine {
         cache.refresh(&snapshot.scope, snapshot.branch.as_deref(), true)?;
         Ok(Some(cache))
     }
+}
+
+fn editable_comment<'a>(
+    comments: &'a mut [Comment],
+    id: &str,
+    expected_body: &str,
+) -> Result<&'a mut Comment> {
+    let comment = comments
+        .iter_mut()
+        .find(|c| c.id == id)
+        .ok_or("Comment not found in this worktree")?;
+    if comment.delivery.is_some() || comment.resolved {
+        return Err(
+            "Only open, unsent comments can be edited or deleted; delivery history is preserved"
+                .into(),
+        );
+    }
+    if comment.body != expected_body {
+        return Err("Comment changed elsewhere; refresh before editing or deleting".into());
+    }
+    Ok(comment)
 }
 
 fn combined_feedback(

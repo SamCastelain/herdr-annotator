@@ -205,6 +205,107 @@ fn stale_snapshot_is_rejected_without_saving() {
 }
 
 #[test]
+fn last_commit_includes_head_and_worktree_without_touching_index_and_isolates_notes() {
+    let f = Fixture::new(true);
+    f.change();
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-m", "latest"]);
+    fs::write(f.repo.join("staged.txt"), "staged\n").unwrap();
+    git(&f.repo, &["add", "staged.txt"]);
+    fs::write(f.repo.join("new.txt"), "untracked\n").unwrap();
+    let index = fs::read(f.repo.join(".git/index")).unwrap();
+    let request = |mut value: Value| {
+        value["scope"] =
+            json!({"repo": f.repo, "comparison": {"mode": "last_commit", "base": "ignored"}});
+        Engine::new(f.state.clone()).handle(serde_json::from_value(value).unwrap())
+    };
+    let s = request(json!({"op":"snapshot"})).unwrap();
+    assert_eq!(s["snapshot"]["scope"]["comparison"]["mode"], "last_commit");
+    assert_eq!(s["snapshot"]["scope"]["comparison"]["base"], Value::Null);
+    assert_eq!(s["snapshot"]["files"].as_array().unwrap().len(), 3);
+    assert!(s["snapshot"]["files"][0].to_string().contains("changed"));
+    let added = request(json!({"op":"add", "revision":s["snapshot"]["revision"], "path":"file.txt", "selection":null, "body":"last commit note"})).unwrap();
+    assert_eq!(added["comments"].as_array().unwrap().len(), 1);
+    assert!(f.snapshot()["comments"].as_array().unwrap().is_empty());
+    assert_eq!(fs::read(f.repo.join(".git/index")).unwrap(), index);
+}
+
+#[test]
+fn last_commit_supports_root_commit_and_rejects_unborn_head() {
+    for committed in [false, true] {
+        let f = Fixture::new(committed);
+        let result = Engine::new(f.state.clone()).handle(
+            serde_json::from_value(json!({
+                "op":"snapshot", "scope":{"repo":f.repo,"comparison":{"mode":"last_commit"}}
+            }))
+            .unwrap(),
+        );
+        if committed {
+            let s = result.unwrap();
+            assert_eq!(s["snapshot"]["files"][0]["path"], "file.txt");
+            assert!(
+                s["snapshot"]["files"][0]["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["kind"] == "add" && r["text"] == "one")
+            );
+        } else {
+            assert!(result.unwrap_err().contains("needs a commit"));
+        }
+    }
+}
+
+#[test]
+fn edit_delete_preserve_anchor_and_reject_concurrent_edits_and_delivery_history() {
+    let f = Fixture::new(true);
+    f.change();
+    let s = f.add(json!({"side":"new","start":2,"end":2}));
+    let id = s["comments"][0]["id"].clone();
+    let edited = f
+        .request(
+            json!({"op":"edit", "revision":s["snapshot"]["revision"], "id":id,
+        "expected_body":"Please check this", "body":"  Updated note  "}),
+        )
+        .unwrap();
+    assert_eq!(edited["comments"][0]["body"], "Updated note");
+    assert_eq!(edited["comments"][0]["anchor"], s["comments"][0]["anchor"]);
+    assert_eq!(
+        edited["comments"][0]["position"],
+        s["comments"][0]["position"]
+    );
+    assert!(
+        f.request(
+            json!({"op":"delete", "revision":edited["snapshot"]["revision"], "id":id,
+        "expected_body":"Please check this"})
+        )
+        .unwrap_err()
+        .contains("changed elsewhere")
+    );
+    f.request(json!({"op":"resolve","id":id,"resolved":true}))
+        .unwrap();
+    assert!(
+        f.request(
+            json!({"op":"edit", "revision":edited["snapshot"]["revision"], "id":id,
+        "expected_body":"Updated note", "body":"changed"})
+        )
+        .unwrap_err()
+        .contains("Only open")
+    );
+    let reopened = f
+        .request(json!({"op":"resolve","id":id,"resolved":false}))
+        .unwrap();
+    let deleted = f
+        .request(
+            json!({"op":"delete", "revision":reopened["snapshot"]["revision"], "id":id,
+        "expected_body":"Updated note"}),
+        )
+        .unwrap();
+    assert!(deleted["comments"].as_array().unwrap().is_empty());
+    assert!(f.snapshot()["comments"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn changed_or_committed_code_is_stale_and_excluded_from_feedback() {
     let f = Fixture::new(true);
     f.change();
@@ -619,6 +720,130 @@ fn busy_or_blocked_agents_never_receive_review_text() {
         let rejected = core.request(json!({"op":"send", "target":"testserver/t1", "revision":s["data"]["snapshot"]["revision"]}), status, false);
         assert_eq!(rejected["ok"], false);
     }
+    assert_eq!(core.sends(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn quick_questions_send_only_selected_context_and_keep_review_comments() {
+    let core = FakeCore::new();
+    let s = core.added();
+    let question = json!({"op":"ask", "target":"testserver/t1", "question_id":"q-1", "path":"file.txt",
+        "revision":s["data"]["snapshot"]["revision"], "context":{"kind":"selection","selection":{"side":"new","start":2,"end":2}},
+        "body":"Why did this change?"});
+    let sent = core.request(question.clone(), "idle", false);
+    assert_eq!(sent["data"]["question"]["status"], "confirmed", "{sent}");
+    let again = core.request(question, "idle", false);
+    assert_eq!(again["data"]["question"]["status"], "confirmed");
+    assert_eq!(core.sends(), 1);
+    let loaded = core.request(json!({"op":"snapshot"}), "idle", false);
+    assert_eq!(loaded["data"]["comments"][0]["delivery"], Value::Null);
+    let log = fs::read_to_string(core.log).unwrap();
+    let message: Value = log
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v[0] == "send")
+        .unwrap();
+    let text = message
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(text.contains("Why did this change?"));
+    assert!(text.contains("changed"));
+    assert!(!text.contains("Human note"));
+    assert!(!text.contains("three"));
+}
+
+#[cfg(unix)]
+#[test]
+fn quick_questions_persist_uncertainty_and_require_explicit_checked_retry() {
+    let core = FakeCore::new();
+    let s = core.added();
+    let mut question = json!({"op":"ask", "target":"testserver/t1", "question_id":"q-1", "path":"file.txt",
+        "revision":s["data"]["snapshot"]["revision"], "context":{"kind":"file"}, "body":"Explain this diff"});
+    let failed = core.request(question.clone(), "idle", true);
+    assert_eq!(
+        failed["data"]["question"]["status"], "uncertain",
+        "{failed}"
+    );
+    question["question_id"] = json!("q-new-composer");
+    let again = core.request(question.clone(), "idle", false);
+    assert_eq!(again["data"]["question"]["status"], "uncertain");
+    assert_eq!(core.sends(), 1);
+    question["retry"] = json!(true);
+    let retried = core.request(question, "idle", false);
+    assert_eq!(retried["data"]["question"]["status"], "confirmed");
+    assert_eq!(core.sends(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn hunk_questions_include_both_sides_without_crossing_into_the_next_hunk() {
+    let core = FakeCore::new();
+    let baseline = (1..=40).map(|n| format!("line {n}\n")).collect::<String>();
+    fs::write(core.fixture.repo.join("file.txt"), &baseline).unwrap();
+    git(&core.fixture.repo, &["add", "."]);
+    git(&core.fixture.repo, &["commit", "-m", "long baseline"]);
+    fs::write(
+        core.fixture.repo.join("file.txt"),
+        baseline
+            .replace("line 2\n", "first change\n")
+            .replace("line 38\n", "second change\n"),
+    )
+    .unwrap();
+    let s = core.request(json!({"op":"snapshot"}), "idle", false);
+    let rows = s["data"]["snapshot"]["files"][0]["rows"]
+        .as_array()
+        .unwrap();
+    let hunks = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row["kind"] == "hunk")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(hunks.len(), 2);
+    let sent = core.request(json!({"op":"ask", "target":"testserver/t1", "question_id":"hunk-1", "path":"file.txt",
+        "revision":s["data"]["snapshot"]["revision"], "context":{"kind":"hunk","row":hunks[0]}, "body":"Explain this hunk"}), "idle", false);
+    assert_eq!(sent["data"]["question"]["status"], "confirmed", "{sent}");
+    let log = fs::read_to_string(core.log).unwrap();
+    let message: Value = log
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v[0] == "send")
+        .unwrap();
+    let text = message
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert!(text.contains("line 2"));
+    assert!(text.contains("first change"));
+    assert!(!text.contains("second change"));
+}
+
+#[cfg(unix)]
+#[test]
+fn questions_refuse_busy_agents_stale_previews_invalid_hunks_and_wrong_machines() {
+    let core = FakeCore::new();
+    let s = core.added();
+    let question = json!({"op":"ask", "target":"testserver/t1", "question_id":"q-1", "path":"file.txt",
+        "revision":s["data"]["snapshot"]["revision"], "context":{"kind":"hunk","row":2}, "body":"Explain this"});
+    assert_eq!(core.request(question.clone(), "idle", false)["ok"], false);
+    let mut valid = question;
+    valid["context"] = json!({"kind":"file"});
+    for status in ["working", "blocked", "error"] {
+        assert_eq!(core.request(valid.clone(), status, false)["ok"], false);
+    }
+    valid["target"] = json!("other/t1");
+    assert_eq!(core.request(valid.clone(), "idle", false)["ok"], false);
+    valid["target"] = json!("testserver/t1");
+    valid["revision"] = json!("old");
+    assert_eq!(core.request(valid, "idle", false)["ok"], false);
     assert_eq!(core.sends(), 0);
 }
 

@@ -34,8 +34,8 @@ function harness() {
       focus() { events.focus?.({}, cx); }, emit(name, event) { events[name]?.(event, cx); }, release() {} };
   }
   const snapshot = () => ({
-    snapshot: { scope: { ...state.scope }, branch: "main", revision: state.revision,
-      files: [{ path: "a.rs", status: " M", rows: [{ kind: "add", old: null, new: 2, text: "changed" }], truncated: false }], limited: false },
+    snapshot: { scope: { ...state.scope }, branch: "main", head: "head1", revision: state.revision,
+      files: [{ path: "a.rs", status: " M", rows: [{ kind: "add", old: null, new: 2, text: "changed" }], loaded: true, truncated: false }], limited: false },
     comments: [{ id: "note1", path: "a.rs", body: "Inline note", stale: false, resolved: false, delivery: null, position: { side: "new", start: 2, end: 2 } }],
   });
   const cx = { notify() {}, stop_propagation() {}, focus_handle: () => ({}), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
@@ -52,7 +52,14 @@ function harness() {
       return result;
     },
     Scrollbar: { vertical: node },
-    list: (id, count, key, render) => { const result = node().id(id); state.diffList = { id, count, key, render }; return result; },
+    list: (id, count, key, render) => {
+      const result = node().id(id);
+      // gpui-shell 0.7.1 splices 0..old_count when the native item count changes.
+      // GPUI moves a scroll position within that replaced range to its start.
+      const previous = state.diffList;
+      const scroll = previous?.id === id && previous.count === count ? previous.scroll : { index: 0, offset: 0 };
+      state.diffList = { id, count, key, render, scroll }; return result;
+    },
     run: (name, args) => { state.commands.push({ name, args }); },
     TextareaState: { new: input }, Textarea: { new: node },
     props: () => ({ scope: state.scope, space: "space1", tab: state.tab, ...state.props }),
@@ -96,6 +103,117 @@ test("one click sends saved comments; rendering alone never sends", async () => 
   assert.ok(!h.nodes.some(n => n.id === "cancel-send"));
 });
 
+test("inline edit saves only that note, preserves later edits, and blocks accidental batch send", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.beginEdit(h.mod.data.comments[0], h.cx);
+  h.mod.editDraft.editor.set_value("First edit");
+  h.mod.sendToSession(h.cx); assert.equal(h.requests.filter(r => r.op === "send").length, 0);
+  h.state.reply = async request => {
+    if (request.op === "edit") h.mod.editDraft.editor.set_value("Later edit");
+    const data = h.snapshot(); data.comments[0].body = request.body;
+    return { code: 0, stdout: JSON.stringify({ ok: true, data }) };
+  };
+  h.mod.saveEdit(h.cx); await h.drain();
+  assert.equal(h.requests.at(-1).op, "edit");
+  assert.equal(h.requests.at(-1).expected_body, "Inline note");
+  assert.equal(h.mod.editDraft.editor.value(), "Later edit");
+  assert.equal(h.mod.editDraft.expected_body, "First edit");
+  h.state.reply = async request => { const data = h.snapshot(); data.comments[0].body = request.body; return { code: 0, stdout: JSON.stringify({ ok: true, data }) }; };
+  h.mod.saveEdit(h.cx); await h.drain(); assert.equal(h.mod.editDraft, undefined);
+});
+
+test("delete needs explicit confirmation and never exposes editing for delivery history", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain(); h.mod.view = "comments"; h.mod.render(h.cx);
+  const before = h.requests.length;
+  h.nodes.find(n => n.id === "delete-note1").events.on_click(null, h.cx);
+  assert.equal(h.requests.length, before); h.mod.render(h.cx);
+  h.nodes.find(n => n.id === "confirm-delete-note1").events.on_click(null, h.cx); await h.drain();
+  assert.equal(h.requests.at(-1).op, "delete"); assert.equal(h.requests.at(-1).expected_body, "Inline note");
+  h.mod.data.comments[0].delivery = "uncertain";
+  const start = h.nodes.length; h.mod.render(h.cx);
+  assert.ok(!h.nodes.slice(start).some(n => n.id === "edit-note1" || n.id === "delete-note1"));
+});
+
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} quick ask sends a question only after explicit Send`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
+  h.nodes.find(n => n.id === (full ? "full-ask-file" : "ask-file")).events.on_click(null, h.cx);
+  assert.equal(h.requests.filter(r => r.op === "ask").length, 0);
+  h.mod.questionDraft.editor.set_value("Why this change?");
+  h.state.reply = async () => ({ code: 0, stdout: JSON.stringify({ ok: true, data: { question: { status: "confirmed", error: null } } }) });
+  h.mod.sendQuestion(h.cx); h.mod.sendQuestion(h.cx); await h.drain();
+  const request = h.requests.at(-1);
+  assert.equal(request.op, "ask"); assert.equal(request.target, "t7"); assert.equal(request.context.kind, "file");
+  assert.equal(h.requests.filter(r => r.op === "ask").length, 1);
+  assert.equal(h.mod.questionDraft, undefined); assert.equal(h.mod.data.comments[0].delivery, null);
+});
+
+test("uncertain quick ask keeps draft, refuses automatic resend, and never redirects retries", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.beginQuestion({ kind: "selection", selection: { side: "new", start: 2, end: 2 } }, h.cx);
+  h.mod.questionDraft.editor.set_value("Explain");
+  h.state.agents[0].status = "working"; h.mod.sendQuestion(h.cx); await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "ask").length, 0);
+  h.state.agents[0].status = "idle";
+  h.state.reply = async () => ({ code: 0, stdout: JSON.stringify({ ok: true, data: { question: { status: "uncertain", error: "offline" } } }) });
+  h.mod.sendQuestion(h.cx); await h.drain(); h.mod.sendQuestion(h.cx); await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "ask").length, 1);
+  h.state.agents[0].address = "t8"; h.state.focus = { terminal: "t8", pane: "p7" };
+  h.mod.sendQuestion(h.cx, true); await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "ask").length, 1);
+  assert.match(h.mod.questionDraft.error, /original question and recipient/);
+});
+
+test("full split-diff right-click preserves the old side and original hunk index", async () => {
+  const h = harness(); h.state.props = { presentation: "full" };
+  h.mod.init({}, h.cx); await h.drain(); h.mod.data.comments = [];
+  h.mod.data.snapshot.files[0].rows = [
+    { kind: "hunk", old: null, new: null, text: "@@ -1 +1 @@" },
+    { kind: "delete", old: 1, new: null, text: "old" },
+    { kind: "add", old: null, new: 1, text: "new" },
+    { kind: "hunk", old: null, new: null, text: "@@ -9 +9 @@" },
+    { kind: "context", old: 9, new: 9, text: "same" },
+  ];
+  h.mod.render(h.cx);
+  const list = h.nodes.filter(n => n.id === h.state.diffList.id).at(-1);
+  const frame = h.nodes.filter(n => n.id === "full-diff-frame").at(-1);
+  frame.events.on_mouse_down({ bounds: { width: 1000 }, local_position: { x: 10 } });
+  list.events.on_item_secondary_click("row-1", h.cx);
+  assert.equal(h.mod.questionDraft.context.selection.side, "old");
+  h.mod.questions.clear(); list.events.on_item_secondary_click("row-2", h.cx);
+  assert.equal(h.mod.questionDraft.context.kind, "hunk");
+  assert.equal(h.mod.questionDraft.context.row, 3);
+  assert.equal(h.requests.filter(r => r.op === "ask").length, 0);
+});
+
+test("open-file API refreshes first, preserves drafts, and never consumes a newer request", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const request = id => ({ id, at: Date.now(), path: "/checkout/a.rs", on: null });
+  h.state.shared["annotator.open"] = request("first"); h.mod.editor.set_value("Unsaved");
+  h.mod.consumeOpenRequest(h.cx); assert.equal(h.state.shared["annotator.open"].id, "first");
+  h.mod.cancelDraft(h.cx); h.mod.view = "comments";
+  h.state.reply = async () => {
+    h.state.shared["annotator.open"] = request("second");
+    return { code: 0, stdout: JSON.stringify({ ok: true, data: h.snapshot() }) };
+  };
+  h.mod.consumeOpenRequest(h.cx); await h.drain();
+  assert.equal(h.state.shared["annotator.open"].id, "second");
+  h.state.reply = null; h.mod.consumeOpenRequest(h.cx); await h.drain(); h.mod.consumeOpenRequest(h.cx);
+  assert.equal(h.state.shared["annotator.open"], null); assert.equal(h.mod.view, "diff");
+  h.state.shared["annotator.open"] = { ...request("remote"), on: "remote" };
+  h.mod.consumeOpenRequest(h.cx); assert.equal(h.state.shared["annotator.open"].id, "remote");
+  h.state.shared["annotator.open"] = { ...request("expired"), at: Date.now() - 31000 };
+  h.mod.consumeOpenRequest(h.cx); assert.equal(h.state.shared["annotator.open"], null);
+});
+
+test("bindable commands cycle Last commit without sending and keep scope drafts guarded", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.handleCommand("scope", h.cx); await h.drain();
+  assert.equal(h.mod.mode, "last_commit"); assert.equal(h.requests.at(-1).scope.comparison.mode, "last_commit");
+  h.mod.editor.set_value("Draft"); h.mod.handleCommand("scope", h.cx); await h.drain();
+  assert.equal(h.mod.mode, "last_commit"); assert.equal(h.requests.filter(r => r.op === "send").length, 0);
+});
+
 for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} hides resolved local notes and GitHub threads; toggle keeps history recoverable`, async () => {
   const h = harness(); h.state.props = full ? { presentation: "full" } : {};
   h.mod.init({}, h.cx); await h.drain();
@@ -106,7 +224,7 @@ for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} hide
   const render = () => { const start = h.nodes.length; h.mod.render(h.cx); return h.nodes.slice(start); };
   let nodes = render();
   assert.ok(!nodes.some(n => n.id === "note-closed" || n.id === "note-missing"));
-  if (full) assert.equal(h.state.diffList.count, 2, "resolved inline note and marker are omitted");
+   if (full) assert.equal(h.state.diffList.count, 3, "stable source/note slots omit resolved content");
   const toggle = full ? "full-resolved" : "filter-resolved";
   nodes.find(n => n.id === toggle).events.on_click(null, h.cx);
   assert.equal(h.state.shared["annotator.showResolved"], true);
@@ -122,6 +240,28 @@ for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} hide
   assert.equal(h.requests.length, before, "visibility never sends or mutates saved notes");
   assert.equal(h.mod.data.comments.length, 3);
   assert.equal(review.pendingComments(h.mod.data.comments).length, 1);
+});
+
+for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} hides confirmed local and GitHub sends immediately and retains history`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  const sent = h.snapshot(); sent.comments[0].delivery = "sent";
+  sent.github = { threads: [{ id: "sent-thread", resolved: false, delivery: "sent", comments: [] },
+    { id: "uncertain-thread", resolved: false, delivery: "uncertain", comments: [] }] };
+  h.state.reply = async () => ({ code: 0, stdout: JSON.stringify({ ok: true, data: sent }) });
+  h.mod.sendToSession(h.cx); await h.drain();
+  const render = () => { const start = h.nodes.length; h.mod.render(h.cx); return h.nodes.slice(start); };
+  let nodes = render();
+  assert.ok(!nodes.some(n => n.id === "note-note1"));
+  assert.equal(h.mod.resolvedCount(), 2);
+  h.mod.view = "github"; nodes = render();
+  assert.ok(!nodes.some(n => n.id === "thread-sent-thread"));
+  assert.ok(nodes.some(n => n.id === "thread-uncertain-thread"));
+  nodes.find(n => n.id === (full ? "full-resolved" : "filter-resolved")).events.on_click(null, h.cx);
+  nodes = render(); assert.ok(nodes.some(n => n.id === "thread-sent-thread"));
+  h.mod.view = "comments"; nodes = render(); assert.ok(nodes.some(n => n.id === "note-note1"));
+  assert.equal(h.mod.data.comments[0].resolved, false);
+  assert.equal(h.requests.filter(r => r.op === "send").length, 1);
 });
 
 test("resolved visibility is restored from shared settings and composes with Unread only", async () => {
@@ -434,9 +574,9 @@ test("full diff rows are deferred; split selection keeps old and new sides", asy
     { kind: "add", old: null, new: 8, text: "after" },
   ];
   h.mod.render(h.cx);
-  assert.equal(h.state.diffList.count, 1);
+  assert.equal(h.state.diffList.count, 3);
   const start = h.nodes.length;
-  h.state.diffList.render(0);
+  h.state.diffList.render(1);
   assert.ok(h.nodes.slice(start).every(n => Object.keys(n.events).length === 0));
   const frame = h.nodes.filter(n => n.id === "full-diff-frame").at(-1);
   frame.events.on_mouse_down({ bounds: { width: 1000 }, local_position: { x: 20 }, modifiers: {} });
@@ -445,6 +585,38 @@ test("full diff rows are deferred; split selection keeps old and new sides", asy
   frame.events.on_mouse_down({ bounds: { width: 1000 }, local_position: { x: 750 }, modifiers: {} });
   h.nodes.filter(n => n.id === h.state.diffList.id).at(-1).events.on_item_click("row-0", h.cx);
   assert.equal(h.mod.selection.side, "new"); assert.equal(h.mod.selection.start, 8);
+});
+
+test("saving an inline comment keeps the native list item count and reading position", async () => {
+  const h = harness(); h.state.props = { presentation: "full" };
+  h.mod.init({}, h.cx); await h.drain(); h.mod.data.comments = [];
+  const rows = Array.from({ length: 200 }, (_, i) => ({ kind: "context", old: i + 1, new: i + 1, text: `line ${i + 1}` }));
+  h.mod.data.snapshot.files[0].rows = rows; h.mod.render(h.cx);
+  h.state.diffList.scroll = { index: 110, offset: 7 };
+  const count = h.state.diffList.count;
+  h.mod.selectLine(rows[120], {}, h.cx); h.mod.editor.set_value("Check this line");
+  h.state.reply = async request => {
+    const data = h.snapshot(); data.snapshot.files[0].rows = rows;
+    data.comments = [{ ...data.comments[0], body: request.body, position: { side: "new", start: 121, end: 121 } }];
+    return { code: 0, stdout: JSON.stringify({ ok: true, data }) };
+  };
+  h.mod.saveComment(h.cx); await h.drain(); h.mod.render(h.cx);
+  assert.equal(h.state.diffList.count, count, "saved notes must not splice the native source list");
+  assert.deepEqual(h.state.diffList.scroll, { index: 110, offset: 7 });
+});
+
+test("multiple notes on one line keep separate edit and delete actions", async () => {
+  const h = harness(); h.state.props = { presentation: "full" };
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.data.comments.push({ ...h.mod.data.comments[0], id: "note2", body: "Second note" });
+  h.mod.render(h.cx);
+  h.nodes.filter(n => n.id === h.state.diffList.id).at(-1).events.on_item_click("notes-row-0", h.cx);
+  assert.equal(h.mod.editDraft, undefined, "do not guess which of several notes was clicked");
+  const start = h.nodes.length; h.mod.render(h.cx);
+  assert.ok(h.nodes.slice(start).some(n => n.id === "edit-note1"));
+  assert.ok(h.nodes.slice(start).some(n => n.id === "edit-note2"));
+  h.nodes.slice(start).find(n => n.id === "edit-note2").events.on_click(null, h.cx);
+  assert.equal(h.mod.editDraft.id, "note2");
 });
 
 test("read toggles omit revision and unread filtering never changes send eligibility", async () => {
@@ -492,14 +664,18 @@ test("full reader defaults to two columns with inline notes and an on-demand com
   assert.equal(h.state.panelCalls, 2);
   assert.equal(h.mod.commentsOpen, false);
   assert.ok(!h.nodes.some(n => n.id === "full-composer"));
-  assert.equal(h.state.diffList.count, 2, "one source row plus its inline note");
+  assert.equal(h.state.diffList.count, 3, "one source row with fixed before/inline note slots");
   const start = h.nodes.length;
-  h.state.diffList.render(1);
+  h.state.diffList.render(2);
   assert.ok(h.nodes.slice(start).some(n => n.id === "full-inline-note1"));
   assert.ok(h.nodes.slice(start).every(n => Object.keys(n.events).length === 0));
-  h.nodes.filter(n => n.id === h.state.diffList.id).at(-1).events.on_item_click("note-note1", h.cx);
+  assert.ok(!h.nodes.slice(start).some(n => n.children.includes("Click to mark read, resolve or reopen")));
+  h.nodes.filter(n => n.id === h.state.diffList.id).at(-1).events.on_item_click("notes-row-0", h.cx);
   h.mod.render(h.cx);
   assert.ok(h.nodes.some(n => n.id === "full-comment-actions"));
+  assert.equal(h.mod.editDraft.id, "note1");
+  h.nodes.filter(n => n.id === "cancel-edit-note1").at(-1).events.on_click(null, h.cx);
+  h.mod.render(h.cx);
   h.nodes.filter(n => n.id === "full-new-file-comment").at(-1).events.on_click(null, h.cx);
   h.mod.render(h.cx);
   assert.ok(h.nodes.some(n => n.id === "full-composer"));
@@ -592,7 +768,7 @@ test("syntax toggles persist and colored rows keep the deferred renderer handler
   h.mod.syntaxCache = null; h.mod.prepareSyntax(h.mod.data.snapshot);
   h.mod.render(h.cx);
   const start = h.nodes.length;
-  h.state.diffList.render(0);
+  h.state.diffList.render(1);
   assert.ok(h.nodes.slice(start).every(n => Object.keys(n.events).length === 0));
   assert.equal(h.mod.syntax, true);
   h.nodes.filter(n => n.id === "full-syntax").at(-1).events.on_click(null, h.cx);
