@@ -153,8 +153,9 @@ to the review; the separate full-width Send action submits the saved batch.
    `origin/develop`, or another available ref and press Enter / **Compare**.
    Nothing fetches automatically. A failed base lookup does not disable switching
    to Last commit or Uncommitted.
-  **Auto** prefers local `develop`, even if `origin/HEAD` points elsewhere or
-  `origin/develop` is stale. Without local `develop`, the previous remote-default
+  **Auto** compares the merge-bases of local `develop` and `origin/develop`,
+  choosing the closer branch point to HEAD (local wins ties). A stale local ref
+  no longer adds upstream changes to the review. Without local `develop`, the remote-default
   fallback applies. Picking a named ref pins it; choosing Auto clears that pin.
   Legacy saved `origin/develop` defaults are reset to Auto. Other saved custom
   refs stay pinned. Notes remain stored under their original comparison/base.
@@ -250,8 +251,10 @@ not open its action panel or start editing.
 
 Source rows are virtualized review targets, not one continuous selectable
 document. Open **Copy…** for the diff preview, selected old/new source lines,
-the file path, checkout path, or all saved local comments. Selected-line copying
-omits gutters and diff signs; diff copying keeps signs and hunk headers. These
+the file path, checkout path, or all saved local comments. **Copy branch** copies
+the exact branch name; branch headers and full-review checkout/file paths also
+support native selection.
+Selected-line copying omits gutters and diff signs; diff copying keeps signs and hunk headers. These
 copy actions stay usable during refresh and do not save or send anything.
 For a truncated diff, copying includes only the available preview.
 

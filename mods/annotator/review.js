@@ -207,6 +207,20 @@ export function layoutSidebar(root) {
   return { id: panel.id, stack: stack.id, active: stack.active, hidden: Boolean(panel.hidden), changes: active?.content?.mod === "annotator" };
 }
 
+// Match identity, never a tab title. A review keeps its comparison/drafts when
+// reopened. Ignore stale registrations left behind by closed tabs.
+export function existingReviewTab(current, spaceList, paneList, reviews) {
+  const sourceTab = reviews[current.tab]?.sourceTab ?? current.tab;
+  const live = new Set((spaceList.find(space => space.id === current.space)?.tabs ?? []).map(tab => tab.id));
+  for (const [tab, review] of Object.entries(reviews)) {
+    if (!live.has(tab) || review.space !== current.space || review.sourceTab !== sourceTab) continue;
+    if (review.scope && (review.scope.repo !== current.scope.repo || (review.scope.machine ?? null) !== (current.scope.machine ?? null))) continue;
+    const pane = paneList.find(pane => pane.tab === tab && pane.mod === "annotator");
+    return { tab, pane: pane?.pane ?? null };
+  }
+  return null;
+}
+
 // One shared controller across all mod copies. Change visibility only on tab
 // transitions, so a person's manual sidebar toggle in a full review wins.
 export function reviewSidebarTransition(previous, focus, reviews, panel) {

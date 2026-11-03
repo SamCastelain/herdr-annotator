@@ -133,9 +133,11 @@ Keep layouts intact during automatic installation and update private tabs from
 their receipt. Persist version/commit/binary/updater hashes. Builds need the
 existing Rust/Python/Git toolchain; no global keys or background daemon install.
 
-Auto branch base prefers local develop before origin/HEAD. Named base selections
-are pinned; Auto clears the pin. Reset legacy origin/develop defaults to Auto,
-preserve custom saved refs, and keep notes isolated by resolved comparison/base.
+Auto compares local develop and origin/develop merge-bases and chooses the
+descendant common ancestor; ties prefer local develop. This excludes upstream
+work when the local ref is stale without fetching or changing refs. Named base
+selections stay pinned; Auto clears the pin. Reset legacy origin/develop defaults
+to Auto, preserve custom refs, and isolate notes by resolved comparison/base.
 
 ## Built from
 

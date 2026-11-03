@@ -1,5 +1,5 @@
 import { spaces, panes, focused, agents, exec, run, layout, shared, setShared } from "herdr";
-import { reviewLocation, sessionTarget, layoutSidebar } from "./review.js";
+import { reviewLocation, sessionTarget, layoutSidebar, existingReviewTab } from "./review.js";
 
 // Capture before creating the tab: focus and the active checkout change afterward.
 export function openReview(owner, cx) {
@@ -7,6 +7,13 @@ export function openReview(owner, cx) {
   const current = reviewLocation(null, focused(), spaces(), panes(), agents());
   if (!current.space || !current.scope.repo) {
     owner.reviewError = "Select a checkout"; cx.notify(); return;
+  }
+  const existing = existingReviewTab(current, spaces(), panes(), shared("annotator.fullTabs") ?? {});
+  if (existing) {
+    owner.reviewError = null;
+    if (existing.pane) run("pane.focus", { pane: existing.pane });
+    else run("tab.select", { id: existing.tab });
+    cx.notify(); return;
   }
   const target = sessionTarget(agents(), current, focused());
   const sourcePanel = layoutSidebar(layout());
@@ -22,7 +29,7 @@ export function openReview(owner, cx) {
       const qualify = id => current.scope.machine && !id.startsWith(`${current.scope.machine}/`) ? `${current.scope.machine}/${id}` : id;
       const tab = qualify(made.tab), pane = qualify(made.pane);
       setShared("annotator.fullTabs", { ...(shared("annotator.fullTabs") ?? {}),
-        [tab]: { sourceTab: current.tab, space: current.space, sourcePanel } });
+        [tab]: { sourceTab: current.tab, space: current.space, sourcePanel, scope: current.scope } });
       run("pane.focus", { pane });
     } catch (e) { owner.reviewError = String(e); }
     finally { owner.openingReview = false; cx.notify(); }

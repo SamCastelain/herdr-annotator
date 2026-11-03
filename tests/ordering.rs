@@ -74,6 +74,88 @@ impl Fixture {
 }
 
 #[test]
+fn ordering_finds_installed_opencode_with_a_desktop_path() {
+    let f = Fixture::new();
+    let revision = f.revision();
+    let home = f.dir.path().join("home");
+    let install_dir = home.join(".local/share/herdr-annotator");
+    fs::create_dir_all(&install_dir).unwrap();
+    fs::write(
+        install_dir.join("install.json"),
+        json!({"tools":{"opencode":f.runner}}).to_string(),
+    )
+    .unwrap();
+    let response = f.dir.path().join("desktop-response");
+    fs::write(
+        &response,
+        json!({"data":{"text":"[\"b.rs\",\"a.rs\"]"}}).to_string(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_herdr-annotator"))
+        .args([
+            "request",
+            &json!({"op":"order","scope":{"repo":f.repo},"revision":revision}).to_string(),
+        ])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("HERDR_ANNOTATOR_OPENCODE")
+        .env("HERDR_ANNOTATOR_STATE_DIR", f.dir.path().join("state"))
+        .env("ORDER_RESPONSE", response)
+        .env("ORDER_LOG", f.dir.path().join("desktop-calls"))
+        .env_remove("ORDER_MUTATE")
+        .env_remove("ORDER_EXIT")
+        .output()
+        .unwrap();
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["ok"], true, "{out}");
+}
+
+#[test]
+fn pi_receives_its_installed_node_path_through_core_with_a_desktop_path() {
+    let f = Fixture::new();
+    let revision = f.revision();
+    let home = f.dir.path().join("pi-home");
+    let install_dir = home.join(".local/share/herdr-annotator");
+    fs::create_dir_all(&install_dir).unwrap();
+    let core = f.dir.path().join("fake-core");
+    let pi = f.dir.path().join("fake-pi");
+    let node_dir = f.dir.path().join("node-runtime");
+    fs::create_dir(&node_dir).unwrap();
+    let node = node_dir.join("node");
+    // An inert core stand-in forwards the explicit --env value before exec.
+    fs::write(
+        &core,
+        "#!/bin/sh\nshift 4\nexport \"$1\"\nshift\nexec \"$@\"\n",
+    )
+    .unwrap();
+    fs::write(&pi, "#!/bin/sh\nexec node \"$@\"\n").unwrap();
+    fs::write(&node, "#!/bin/sh\nprintf '[\"b.rs\",\"a.rs\"]\\n'\n").unwrap();
+    for path in [&core, &pi, &node] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::write(
+        install_dir.join("install.json"),
+        json!({"tools":{"hc":core,"pi":pi,"node":node}}).to_string(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_herdr-annotator"))
+        .args([
+            "request",
+            &json!({"op":"order","runner":"pi","scope":{"repo":f.repo},"revision":revision})
+                .to_string(),
+        ])
+        .env("HOME", &home)
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("HERDR_ANNOTATOR_PI")
+        .env_remove("HERDR_ANNOTATOR_HC")
+        .env("HERDR_ANNOTATOR_STATE_DIR", f.dir.path().join("state"))
+        .output()
+        .unwrap();
+    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(out["ok"], true, "{out}");
+}
+
+#[test]
 fn one_stateless_generation_returns_order_without_modifying_files() {
     let f = Fixture::new();
     let revision = f.revision();
@@ -159,7 +241,9 @@ fn pi_runs_once_through_local_core_without_tools_or_session_history() {
     assert_eq!(out["data"]["files"], json!(["b.rs", "a.rs"]));
     let log = fs::read_to_string(f.dir.path().join("calls")).unwrap();
     let args: Vec<_> = log.lines().collect();
-    assert_eq!(&args[..4], &["exec", "--timeout", "110", "/fixture/pi"]);
+    assert_eq!(&args[..4], &["exec", "--timeout", "110", "--env"]);
+    assert!(args[4].starts_with("PATH="));
+    assert_eq!(args[5], "/fixture/pi");
     for flag in [
         "-p",
         "--no-session",

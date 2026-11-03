@@ -69,11 +69,12 @@ function harness() {
     run: (name, args) => { state.commands.push({ name, args }); },
     TextareaState: { new: input }, Textarea: { new: node },
     InputState: { new: input }, Input: { new: node },
-    InputState: { new: input }, Input: { new: node },
     TextView: { html: (id, html) => { state.textViews ??= []; state.textViews.push({ id, html }); return node().id(id); } },
     props: () => ({ scope: state.scope, space: "space1", tab: state.tab, ...state.props }),
     theme: () => ({ dim: "#666666", ansi1: "#ff0000", ansi2: "#00ff00" }), settings: () => ({}),
     agents: () => state.agents, focused: () => state.focus,
+    spaces: () => [{ id: "space1", tabs: [{ id: state.tab }, ...(state.reviewTabs ?? [])] }],
+    panes: () => state.reviewPanes ?? [],
     home: () => "/home/me", exec: async (_helper, args) => {
       if (_helper === "python3") return { code: 0, stdout: JSON.stringify({ ok: true, data: { current: "0.2.0", latest: null, checked_at: Date.now() / 1000, job: {} } }) };
       if (_helper === "herdr-app") {
@@ -85,7 +86,7 @@ function harness() {
       return { code: 0, stdout: JSON.stringify({ ok: true, data: snapshot() }) };
     },
   };
-  const source = readFileSync(new URL("../mods/annotator/main.js", import.meta.url), "utf8")
+  const source = readFileSync(process.env.HERDR_ANNOTATOR_TEST_MAIN ?? new URL("../mods/annotator/main.js", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "").replace("export default class Annotator", "globalThis.Annotator = class Annotator");
   const full = readFileSync(new URL("../mods/annotator/full.js", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "").replace("export function renderFull", "function renderFull");
@@ -95,6 +96,30 @@ function harness() {
   const drain = async () => { while (jobs.length) await Promise.all(jobs.splice(0)); };
   return { mod, nodes, requests, state, cx, drain, snapshot };
 }
+
+test("switching worktrees supersedes a pending snapshot without waiting for the old remote", async () => {
+  const h = harness(), pending = [];
+  h.state.reply = request => {
+    if (request.op !== "snapshot") return { code: 0, stdout: JSON.stringify({ ok: true, data: {} }) };
+    const data = h.snapshot();
+    return new Promise(resolve => pending.push(() => resolve({ code: 0, stdout: JSON.stringify({ ok: true, data }) })));
+  };
+  h.mod.init({}, h.cx);
+  await new Promise(setImmediate);
+  assert.equal(pending.length, 1);
+  h.state.scope = { repo: "/new-checkout", machine: null };
+  h.mod.render(h.cx);
+  assert.equal(JSON.parse(h.mod.context).scope.repo, "/new-checkout", "new checkout must load while old snapshot is pending");
+  await new Promise(setImmediate);
+  assert.equal(pending.length, 2);
+  pending[0]();
+  await new Promise(setImmediate);
+  assert.equal(h.mod.busy, true, "old completion must not unlock the new request");
+  assert.equal(h.mod.data, null, "old checkout must not reappear");
+  pending[1](); await h.drain();
+  assert.equal(h.mod.data.snapshot.scope.repo, "/new-checkout");
+  assert.equal(h.mod.busy, false);
+});
 
 for (const full of [false, true]) test(`${full ? "full" : "sidebar"} review includes a general note and supports note-only sends`, async () => {
   const h = harness(); h.state.props = full ? { presentation: "full" } : {};
@@ -1239,4 +1264,62 @@ for (const full of [false, true]) test(`${full ? "full" : "sidebar"} runner swit
   assert.equal(h.state.commands.length, 0);
   const next = harness(); next.state.shared = h.state.shared;
   assert.equal(next.mod.orderRunner(), "pi");
+});
+
+test("switching checkout does not wait for an obsolete snapshot or let it clear the new read", async () => {
+  const h = harness(), reads = [];
+  const settle = async () => { for (let n = 0; n < 20; n++) await Promise.resolve(); };
+  h.state.reply = request => request.op === "snapshot" ? new Promise(resolve => reads.push({ request, resolve }))
+    : { code: 0, stdout: JSON.stringify({ ok: true, data: h.snapshot() }) };
+  h.mod.init({}, h.cx); await settle();
+  assert.equal(reads.length, 1);
+  h.state.scope = { repo: "/new-checkout", machine: null };
+  h.mod.render(h.cx); await settle();
+  assert.equal(reads.length, 2, "new checkout read should start without waiting for the old one");
+  reads[0].resolve({ code: 0, stdout: JSON.stringify({ ok: true, data: h.snapshot() }) });
+  await settle();
+  assert.equal(h.mod.busy, true, "obsolete completion must not release the new read's busy guard");
+  const data = h.snapshot(); data.snapshot.scope = { repo: "/new-checkout", machine: null };
+  reads[1].resolve({ code: 0, stdout: JSON.stringify({ ok: true, data }) });
+  await h.drain();
+  assert.equal(h.mod.data.snapshot.scope.repo, "/new-checkout");
+  assert.equal(h.mod.busy, false);
+});
+
+test("copy branch preserves its exact name and branch headers are selectable", async () => {
+  for (const full of [false, true]) {
+    const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+    h.mod.init({}, h.cx); await h.drain();
+    h.mod.data.snapshot.branch = "16611-g-deposits-refund-payment-description";
+    h.mod.render(h.cx); h.mod.copyMenu(h.mod.data.snapshot.files[0]);
+    h.nodes.find(node => node.id === "copy-branch").events.on_click({}, h.cx);
+    assert.equal(h.state.clipboard, "16611-g-deposits-refund-payment-description");
+    assert.equal(h.nodes.find(node => node.id === (full ? "full-branch-name" : "review-branch-name")).selectable, true);
+  }
+});
+
+test("full review checkout and file paths support native selection and exact copying", async () => {
+  const h = harness(); h.state.props = { presentation: "full" };
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.data.snapshot.scope.repo = "/home/jakub/worktrees/16611-refund";
+  h.mod.render(h.cx); h.mod.copyMenu(h.mod.data.snapshot.files[0]);
+  for (const id of ["full-checkout-path", "full-file-path"]) {
+    assert.equal(h.nodes.find(node => node.id === id).selectable, true, id);
+  }
+  assert.equal(h.state.textViews.find(view => view.id === "full-checkout-path").html, "/home/jakub/worktrees/16611-refund");
+  h.nodes.find(node => node.id === "copy-checkout").events.on_click({}, h.cx);
+  assert.equal(h.state.clipboard, "/home/jakub/worktrees/16611-refund");
+});
+
+test("sidebar full-review button focuses its existing live review without replacing drafts", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.openFull(h.cx); await h.drain();
+  h.state.reviewTabs = [{ id: "review-tab" }];
+  h.state.reviewPanes = [{ tab: "review-tab", pane: "review-pane", mod: "annotator" }];
+  h.mod.editor.set_value("Keep my source draft");
+  h.mod.openFull(h.cx); await h.drain();
+  assert.equal(h.state.commands.filter(command => command.name === "tab.new").length, 1);
+  assert.equal(h.state.commands.at(-1).name, "pane.focus");
+  assert.equal(h.state.commands.at(-1).args.pane, "review-pane");
+  assert.equal(h.mod.editor.value(), "Keep my source draft");
 });

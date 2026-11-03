@@ -102,6 +102,31 @@ pub(crate) fn canonical_scope(scope: &Scope) -> Result<Scope> {
     })
 }
 
+fn automatic_develop(scope: &Scope, bases: &[String]) -> Result<String> {
+    if bases.iter().any(|base| base == "origin/develop") {
+        let local = git(scope, &["merge-base", "develop", "HEAD"])?;
+        let remote = git(scope, &["merge-base", "origin/develop", "HEAD"])?;
+        if remote.code == 0
+            && (local.code != 0
+                || (local.text != remote.text
+                    && git(
+                        scope,
+                        &[
+                            "merge-base",
+                            "--is-ancestor",
+                            local.text.trim(),
+                            remote.text.trim(),
+                        ],
+                    )?
+                    .code
+                        == 0))
+        {
+            return Ok("origin/develop".into());
+        }
+    }
+    Ok("develop".into())
+}
+
 pub fn snapshot(scope: &Scope, view: &ViewSpec) -> Result<Snapshot> {
     if view.context > 1_000_000 {
         return Err("Context must be between 0 and 1000000 lines".into());
@@ -131,9 +156,10 @@ pub fn snapshot(scope: &Scope, view: &ViewSpec) -> Result<Snapshot> {
         let base = if let Some(base) = &scope.comparison.base {
             base.clone()
         } else if bases.iter().any(|base| base == "develop") {
-            // Review local integration work, not an old remote-tracking ref.
-            // This also applies on develop itself: only worktree changes remain.
-            "develop".to_owned()
+            // Either local or remote-tracking develop may be stale. Prefer the
+            // one whose common ancestor is closer to HEAD, never upstream work
+            // already present when the feature branch was created. No fetch.
+            automatic_develop(&scope, &bases)?
         } else {
             let remote_head = git(
                 &scope,

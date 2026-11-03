@@ -96,6 +96,59 @@ fn general_note_exports_alone_or_after_comments_and_validates_size() {
 }
 
 #[test]
+fn automatic_base_does_not_include_upstream_work_when_local_develop_is_stale() {
+    let f = Fixture::new(true);
+    git(&f.repo, &["branch", "develop"]);
+    git(&f.repo, &["switch", "-c", "upstream"]);
+    fs::write(f.repo.join("upstream.txt"), "not feature work\n").unwrap();
+    git(&f.repo, &["add", "."]);
+    git(
+        &f.repo,
+        &["commit", "-m", "upstream advances beyond local develop"],
+    );
+    git(
+        &f.repo,
+        &["update-ref", "refs/remotes/origin/develop", "HEAD"],
+    );
+    git(&f.repo, &["switch", "-c", "feature", "origin/develop"]);
+    fs::write(f.repo.join("committed.txt"), "feature commit\n").unwrap();
+    git(&f.repo, &["add", "."]);
+    git(&f.repo, &["commit", "-m", "feature"]);
+    f.change();
+    fs::write(f.repo.join("untracked.txt"), "new feature file\n").unwrap();
+    let automatic = Engine::new(f.state.clone())
+        .handle(
+            serde_json::from_value(json!({
+                "op":"snapshot", "scope":{"repo":f.repo,"comparison":{"mode":"branch"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let files: Vec<_> = automatic["snapshot"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(files, vec!["committed.txt", "file.txt", "untracked.txt"]);
+    assert_eq!(
+        automatic["snapshot"]["scope"]["comparison"]["base"],
+        "origin/develop"
+    );
+    // Explicitly selecting the older ref still means exactly that ref.
+    let pinned = f
+        .branch_request(json!({"op":"snapshot"}), "develop")
+        .unwrap();
+    assert!(
+        pinned["snapshot"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "upstream.txt")
+    );
+}
+
+#[test]
 fn automatic_branch_base_prefers_local_develop_over_stale_origin_and_remote_head() {
     let f = Fixture::new(true);
     git(

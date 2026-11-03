@@ -12,13 +12,15 @@ in the same workspace. Local and SSH worktrees supported.
 ### 1. Pick what to review
 
 Click **Changes** for the sidebar, or the adjacent **↗** for a full review tab.
+Opening full review again focuses the existing tab for that source checkout.
 The full view pins your checkout and source chat, with unified or side-by-side
 diffs, syntax colors, resizable panes, and expandable context.
 
 Choose **Uncommitted**, **Last commit** (plus uncommitted work), or **Branch**
 (since merge-base, including committed and uncommitted changes). Pick a local
 base ref from the picker, or type one such as `develop` / `origin/develop` and
-press Enter. Auto prefers local `develop`. No automatic fetch.
+press Enter. Auto chooses the closer branch point from local `develop` and
+`origin/develop`, so a stale local ref does not add upstream changes. No automatic fetch.
 
 <img src="docs/images/scope-picker.png" alt="Changes sidebar with Uncommitted, Last commit, and Branch choices" width="440">
 
@@ -37,6 +39,8 @@ to unique matching context. Outdated notes stay visible but do not enter a send.
 Comment and GitHub reply text supports selection and **⌘C / Ctrl+C**. Use
 **Copy…** for diff previews, selected source lines, paths, or saved comments;
 cards also offer **Copy** and **Copy thread**.
+Branch names and full-review checkout/file paths support selection too;
+**Copy… → Copy branch** copies the exact branch name.
 
 ### 3. Send to the source session
 
@@ -64,6 +68,8 @@ ordering click sends one AI request with paths and bounded diff samples,
 including for SSH checkouts. No tools, saved conversation, or messages to your
 working chat. Pi extensions, MCP, skills, prompt templates and context files are
 disabled for this call. Normal model usage costs apply. Supports 2–200 files.
+The installer records executable paths, including Pi's Node runtime, so ordering
+does not depend on the desktop app inheriting your shell's PATH.
 
 ## Ask without drafting a review
 

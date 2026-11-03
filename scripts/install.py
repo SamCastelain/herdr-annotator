@@ -30,6 +30,8 @@ def digest(path):
 if updater.exists() and (not installed.get("updater_digest") or digest(updater) != installed["updater_digest"]):
     parser.error(f"Installed updater changed locally or has no receipt: {updater}")
 version = json.loads((root / "mods/annotator/mod.json").read_text())["version"]
+tools = {name: str(Path(path).resolve()) for name in ("opencode", "pi", "node", "hc")
+         if (path := shutil.which(name))}
 commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
 def check_release_source():
     if args.expected_commit:
@@ -156,7 +158,7 @@ os.replace(updater_temp, updater)
 receipt_temp = receipt.with_name(f".install-{stamp}.json")
 receipt_temp.write_text(json.dumps({"repo": str(root), "binary": str(binary), "mod": str(mod), "app_home": str(app_home),
                               "version": version, "commit": commit, "binary_digest": digest(binary), "updater_digest": digest(updater),
-                              "layouts": sorted(set(installed.get("layouts", [])) | set(args.layout)),
+                              "layouts": sorted(set(installed.get("layouts", [])) | set(args.layout)), "tools": tools,
                               "files": {name: digest(mod / name) for name in files},
                               **({"tabs_files": installed["tabs_files"]} if installed.get("tabs_files") else {})}, indent=2) + "\n")
 os.replace(receipt_temp, receipt)

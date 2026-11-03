@@ -1,3 +1,4 @@
+mod executables;
 mod git;
 mod github;
 mod model;

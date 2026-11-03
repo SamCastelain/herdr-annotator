@@ -6,12 +6,13 @@ import * as review from "../mods/annotator/review.js";
 
 function harness(machine = null) {
   const prefix = machine ? `${machine}/` : "";
-  const state = { commands: [], shared: {}, jobs: [], failure: false, repo: "/checkout" };
+  const state = { commands: [], shared: {}, jobs: [], failure: false, repo: "/checkout",
+    tabs: [{ id: `${prefix}t1`, active: true }], panes: [] };
   const owner = {};
   const cx = { notify() {}, spawn(fn) { state.jobs.push(() => fn(cx)); } };
   const context = { ...review,
-    spaces: () => [{ id: `${prefix}s1`, active: true, machine, folder: state.repo, tabs: [{ id: `${prefix}t1`, active: true }] }],
-    panes: () => [], focused: () => ({ space: `${prefix}s1`, tab: `${prefix}t1`, pane: `${prefix}p1` }),
+    spaces: () => [{ id: `${prefix}s1`, active: true, machine, folder: state.repo, tabs: state.tabs }],
+    panes: () => state.panes, focused: () => ({ space: `${prefix}s1`, tab: `${prefix}t1`, pane: `${prefix}p1` }),
     agents: () => [{ address: `${prefix}a1`, space: `${prefix}s1`, tab: `${prefix}t1`, pane: `${prefix}p1` }],
     layout: () => null, shared: key => state.shared[key], setShared: (key, value) => { state.shared[key] = value; },
     run: (name, args) => state.commands.push({ name, args }),
@@ -48,4 +49,21 @@ test("missing checkout does not create a tab; failed launch allows explicit retr
   assert.match(h.owner.reviewError, /offline/); assert.equal(h.owner.openingReview, false);
   h.state.failure = false; h.click(); await h.drain();
   assert.equal(h.owner.reviewError, null); assert.equal(h.state.commands.at(-1).name, "pane.focus");
+});
+
+for (const machine of [null, "remote"]) test(`open-review reuses its live tab instead of creating duplicates (${machine ?? "local"})`, async () => {
+  const h = harness(machine), prefix = machine ? `${machine}/` : "";
+  h.click(); await h.drain();
+  h.state.tabs.push({ id: `${prefix}t2` });
+  h.state.panes.push({ tab: `${prefix}t2`, pane: `${prefix}p2`, mod: "annotator" });
+  h.click(); await h.drain();
+  assert.equal(h.state.commands.filter(command => command.binary).length, 1);
+  assert.equal(h.state.commands.at(-1).name, "pane.focus");
+  assert.equal(h.state.commands.at(-1).args.pane, `${prefix}p2`);
+  // A closed review, or a new checkout in the same source tab, needs a new tab.
+  h.state.tabs.pop(); h.click(); await h.drain();
+  assert.equal(h.state.commands.filter(command => command.binary).length, 2);
+  h.state.tabs.push({ id: `${prefix}t2` }); h.state.repo = "/different";
+  h.click(); await h.drain();
+  assert.equal(h.state.commands.filter(command => command.binary).length, 3);
 });

@@ -9,7 +9,7 @@ import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
 import { UpdateController } from "./updates.js";
 import { escapeText, copiedDiff, copiedSelection } from "./review.js";
-import { reviewOrderKey, orderedReviewFiles } from "./review.js";
+import { reviewOrderKey, orderedReviewFiles, existingReviewTab } from "./review.js";
 
 function location() {
   const fixed = props();
@@ -99,6 +99,7 @@ export default class Annotator extends View {
       .child(this.button("copy-diff", file?.truncated ? "Copy diff preview" : "Copy diff", cx => this.copyText(copiedDiff(file), cx), Boolean(file?.loaded && file.rows.length)))
       .child(this.button("copy-selection", "Copy selected lines", cx => this.copyText(copiedSelection(file, selection), cx), Boolean(file && selection)))
       .child(this.button("copy-path", "Copy file path", cx => this.copyText(file.path, cx), Boolean(file)))
+      .child(this.button("copy-branch", "Copy branch", cx => this.copyText(this.data.snapshot.branch, cx), Boolean(this.data?.snapshot.branch)))
       .child(this.button("copy-checkout", "Copy checkout", cx => this.copyText(this.data?.snapshot.scope.repo ?? location().scope.repo, cx)))
       .child(this.button("copy-all-comments", "Copy all comments", cx => this.copyText((this.data?.comments ?? []).map(comment => `${comment.path} · ${commentLocation(comment)}\n${comment.body}`).join("\n\n"), cx), Boolean(this.data?.comments.length)));
   }
@@ -284,7 +285,7 @@ export default class Annotator extends View {
         .child(Input.new(this.baseEditor).id("base-ref-input").flex_1().min_w(0).h(30).px(8).rounded(5).bg(theme().background).border_1().border_color(theme().border))
         .child(this.button("base-apply", "Compare", cx => this.applyBase(cx), Boolean(this.baseEditor.value().trim()))))
       .child(v_flex().max_h(140).overflow_y_scrollbar()
-        .child(this.button("base-auto", "Auto · prefer local develop", cx => this.changeComparison("branch", null, cx, false)))
+        .child(this.button("base-auto", "Auto · closest develop base", cx => this.changeComparison("branch", null, cx, false)))
         .children(this.bases.map(base => this.button(`base-${base}`, base, cx => this.changeComparison("branch", base, cx, true)))));
   }
 
@@ -545,8 +546,11 @@ export default class Annotator extends View {
   }
 
   refresh(cx, force = false, navigating = false) {
-    if (this.busy) return;
     const next = contextKey();
+    if (this.updates?.running || (this.busy && !(this.snapshotRequest && next !== this.context))) return;
+    if (this.snapshotRequest && next !== this.context) {
+      this.snapshotRequest = null; this.busy = false;
+    }
     if (next !== this.context) {
       const draft = this.draft.enter(next, this.context, { open: this.open, mode: this.mode, base: this.base, baseExplicit: this.baseExplicit, contextLines: this.contextLines }, this.data?.snapshot.revision);
       this.context = next; this.data = null; this.open = draft?.open ?? props()?.file ?? null;
@@ -573,12 +577,15 @@ export default class Annotator extends View {
       this.snapshotFailed(`Machine ${current.scope.machine} is unavailable`, current.scope); cx.notify(); return;
     }
     const context = this.context;
+    const token = {}; this.snapshotRequest = token;
+    const request = { op: "snapshot", scope: { ...current.scope, comparison: { mode: this.mode, base: this.baseExplicit ? this.base : null } }, view: { file: this.open, context: this.contextLines } };
     this.busy = true;
     cx.spawn(async cx => {
-      this.ensureReviewNote(context);
       try {
-        const data = await this.request({ op: "snapshot", scope: { ...current.scope, comparison: { mode: this.mode, base: this.baseExplicit ? this.base : null } }, view: { file: this.open, context: this.contextLines } });
-        if (contextKey() !== context) return;
+        if (this.snapshotRequest !== token) return;
+        this.ensureReviewNote(context);
+        const data = await this.request(request);
+        if (this.snapshotRequest !== token || contextKey() !== context) return;
         const previousRevision = this.data?.snapshot.revision;
         if (this.data && this.data.snapshot.branch !== data.snapshot.branch) {
           this.githubRefresh.invalidate();
@@ -602,8 +609,11 @@ export default class Annotator extends View {
           this.sourceDraftNoticeShown = true;
         }
         if (this.githubContext !== context) this.refreshGithub(cx);
-      } catch (e) { if (contextKey() === context) this.snapshotFailed(e, current.scope); }
-      finally { this.busy = false; cx.notify(); }
+      } catch (e) { if (this.snapshotRequest === token && contextKey() === context) this.snapshotFailed(e, current.scope); }
+      finally {
+        if (this.snapshotRequest === token) { this.snapshotRequest = null; this.busy = false; }
+        cx.notify();
+      }
     });
   }
 
@@ -737,6 +747,12 @@ export default class Annotator extends View {
   openFull(cx) {
     if (!this.data || this.busy || this.openingFull) return;
     const current = location(), snapshot = this.data.snapshot, target = this.currentSession();
+    const existing = existingReviewTab({ ...current, scope: snapshot.scope }, spaces(), panes(), shared("annotator.fullTabs") ?? {});
+    if (existing) {
+      if (existing.pane) run("pane.focus", { pane: existing.pane });
+      else run("tab.select", { id: existing.tab });
+      cx.notify(); return;
+    }
     const args = { name: `Review · ${snapshot.branch ?? "changes"}`, space: current.space,
       mod: "annotator", props: { presentation: "full", scope: snapshot.scope,
         space: current.space, tab: current.tab, source_target: target?.address ?? null,
@@ -755,7 +771,7 @@ export default class Annotator extends View {
         const qualify = id => current.scope.machine && !id.startsWith(`${current.scope.machine}/`) ? `${current.scope.machine}/${id}` : id;
         const tab = qualify(made.tab), pane = qualify(made.pane);
         setShared("annotator.fullTabs", { ...(shared("annotator.fullTabs") ?? {}),
-          [tab]: { sourceTab: current.tab, space: current.space, sourcePanel } });
+          [tab]: { sourceTab: current.tab, space: current.space, sourcePanel, scope: snapshot.scope } });
         run("pane.focus", { pane });
       } catch (e) { this.error = String(e); }
       finally { this.openingFull = false; cx.notify(); }
@@ -1000,7 +1016,7 @@ export default class Annotator extends View {
     this.publishUpdateState();
     if (this.updates?.running) return this.updateScreen();
     this.syncSidebar();
-    if (contextKey() !== this.context && !this.busy) this.refresh(cx);
+    if (contextKey() !== this.context && (!this.busy || this.snapshotRequest)) this.refresh(cx);
     this.consumeOpenRequest(cx);
     if (contextKey() === this.context && this.machineUnavailable(location().scope) && !this.snapshotError) {
       this.snapshotFailed(`Machine ${location().scope.machine} is unavailable`, location().scope);
@@ -1040,8 +1056,7 @@ export default class Annotator extends View {
       .child(v_flex().flex_none().bg(t.chrome).px(10).py(6)
         .child(h_flex().items_center().gap(7)
           .child(div().font_semibold().text_size(14).child("Changes"))
-          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
-            .child(`${data?.snapshot.scope.machine ? data.snapshot.scope.machine + " · " : ""}${data?.snapshot.branch ?? ""}`))
+          .child(this.selectableText("review-branch-name", `${data?.snapshot.scope.machine ? data.snapshot.scope.machine + " · " : ""}${data?.snapshot.branch ?? ""}`).flex_1().min_w(0).truncate().text_size(11).text_color(t.dim))
           .child(this.button("open-full-review", "↗", cx => this.openFull(cx), Boolean(data)).tooltip("Open full review tab"))
           .child(this.button("review-updates", "↑", cx => { this.updates.save({ open: !this.updates.state.open }); this.updates.check(cx); cx.notify(); }).tooltip("Annotator updates"))
           .child(this.button("review-refresh", this.busy ? "…" : "↻", cx => { this.refresh(cx, true); this.refreshGithub(cx, true); }).tooltip("Refresh diff and GitHub"))))
