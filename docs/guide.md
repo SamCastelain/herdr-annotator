@@ -18,6 +18,15 @@ GitHub review threads with explicit replies. No commit controls or full-file edi
 - Existing connected core machines for remote work. Remote hosts need only Git
   and their existing core, not this binary or mod.
 - Node.js 22+ for JavaScript tests; Python 3 for the development installer/tests.
+- Optional: OpenCode V2 or Pi on the app machine, with a configured model/auth,
+  for **Order logically**. Click **AI: OpenCode / Pi** to switch runners. Pi runs
+  locally through `hc exec`, without tools, saved sessions, extensions, MCP,
+  skills, prompt templates, context files, or project-local approval.
+  Each ordering click makes one tool-free request with changed paths and bounded
+  diff samples, including SSH checkout content. No working-chat messages or
+  retained conversation; normal model costs apply. No automatic runner fallback.
+  Supports 2–200 changed files; malformed/stale results leave the order unchanged.
+  **Reset order** restores Git order. The open file and drafts stay in place.
 
 ## Build and install locally
 

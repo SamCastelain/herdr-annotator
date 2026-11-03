@@ -9,6 +9,7 @@ import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
 import { UpdateController } from "./updates.js";
 import { escapeText, copiedDiff, copiedSelection } from "./review.js";
+import { reviewOrderKey, orderedReviewFiles } from "./review.js";
 
 function location() {
   const fixed = props();
@@ -22,6 +23,7 @@ export default class Annotator extends View {
     this.error = null; this.notice = null; this.context = null;
     this.snapshotError = null; this.showErrorDetails = false;
     this.sessions = new Map(); this.exportText = null;
+    this.ordering = null;
     this.edits = new Map(); this.questions = new Map();
     this.navigationDrafts = new Map(); this.navigationFiles = new Map();
     this.reviewNotes = new Map();
@@ -106,16 +108,83 @@ export default class Annotator extends View {
 
   publishUpdateState() {
     if (!this.updates) return;
-    if (this.closed) { if (!this._busy) this.updates.close(); return; }
+    if (this.closed) { if (!this._busy && !this.ordering) this.updates.close(); return; }
     const savedDraft = [...(this.draft?.saved.entries() ?? [])].some(([key, draft]) => key !== this.context && draft.body?.trim())
       || [...this.navigationDrafts.values()].some(draft => draft.body?.trim());
-    const blocked = Boolean(this._busy || this.editor?.value().trim() || savedDraft
+    const blocked = Boolean(this._busy || this.ordering || this.editor?.value().trim() || savedDraft
       || [...this.reviewNotes.values()].some(note => note.editor.value().trim())
       || this.edits?.size || this.questions?.size || this.githubDrafts?.size);
     this.updates.publish(blocked);
   }
 
-  close() { this.closed = true; this.updates?.close(Boolean(this._busy)); }
+  close() { this.closed = true; this.updates?.close(Boolean(this._busy || this.ordering)); }
+
+  orderEntry(snapshot = this.data?.snapshot) {
+    return (shared("annotator.fileOrders") ?? []).find(entry => entry.key === reviewOrderKey(snapshot));
+  }
+
+  orderedFiles(snapshot = this.data?.snapshot) {
+    return orderedReviewFiles(snapshot, this.orderEntry(snapshot)?.files);
+  }
+
+  observeOrder(snapshot) {
+    const entry = this.orderEntry(snapshot);
+    if (!entry) return;
+    const view = JSON.stringify(snapshot.view), previous = entry.previews?.find(item => item.view === view);
+    const changed = previous && previous.revision !== snapshot.revision;
+    const previews = [...(entry.previews ?? []).filter(item => item.view !== view), { view, revision: snapshot.revision }].slice(-16);
+    setShared("annotator.fileOrders", (shared("annotator.fileOrders") ?? []).map(item => item.key === entry.key
+      ? { ...item, files: changed ? null : item.files, previews } : item));
+  }
+
+  resetOrder(cx) {
+    const key = reviewOrderKey(this.data?.snapshot);
+    if (this.ordering) this.ordering.cancelled = true;
+    setShared("annotator.fileOrders", (shared("annotator.fileOrders") ?? []).filter(entry => entry.key !== key));
+    this.notice = "Git file order restored."; cx.notify();
+  }
+
+  orderLogically(cx) {
+    const snapshot = this.data?.snapshot;
+    if (this.busy || this.ordering || this.snapshotError || !snapshot || snapshot.files.length < 2 || snapshot.files.length > 200) return;
+    const context = this.context, key = reviewOrderKey(snapshot), runner = this.orderRunner();
+    const token = {}; this.ordering = token; this.error = null;
+    this.notice = "Ordering files with a one-time AI request…";
+    this.publishUpdateState(); cx.notify();
+    cx.spawn(async cx => {
+      try {
+        const result = await this.request({ op: "order", scope: snapshot.scope, revision: snapshot.revision, view: snapshot.view, runner });
+        if (token.cancelled || this.closed || contextKey() !== context || this.context !== context) return;
+        if (reviewOrderKey(this.data?.snapshot) !== key || this.data?.snapshot.revision !== result.revision || this.snapshotError) {
+          this.notice = "Diff or preview changed during ordering. Click Order logically to try again."; return;
+        }
+        const files = orderedReviewFiles(snapshot, result.files);
+        if (files === snapshot.files) throw new Error("AI returned an invalid file order");
+        const entry = { key, files: result.files, previews: [{ view: JSON.stringify(snapshot.view), revision: snapshot.revision }] };
+        setShared("annotator.fileOrders", [...(shared("annotator.fileOrders") ?? []).filter(item => item.key !== key), entry].slice(-20));
+        this.notice = "Logical file order applied. Your working chat is unchanged.";
+      } catch (error) {
+        if (!token.cancelled && !this.closed && contextKey() === context && this.context === context
+          && reviewOrderKey(this.data?.snapshot) === key) this.error = String(error);
+      } finally {
+        if (this.ordering === token) this.ordering = null;
+        this.publishUpdateState(); cx.notify();
+      }
+    });
+  }
+
+  orderRunner() { return shared("annotator.orderRunner") === "pi" ? "pi" : "opencode"; }
+
+  orderButton(id) {
+    const runner = this.orderRunner(), label = runner === "pi" ? "Pi" : "OpenCode";
+    return h_flex().gap(3).items_center()
+      .child(this.button(`${id}-runner`, `AI: ${label}`, cx => {
+        setShared("annotator.orderRunner", runner === "pi" ? "opencode" : "pi"); cx.notify();
+      }, !this.ordering).tooltip(`Switch to ${runner === "pi" ? "OpenCode" : "Pi via Herdr Core"}. Changes the runner only; does not start a request.`))
+      .child(this.button(id, this.ordering ? "Ordering…" : "Order logically", cx => this.orderLogically(cx),
+      !this.ordering && !this.snapshotError && Boolean(this.data && this.data.snapshot.files.length >= 2 && this.data.snapshot.files.length <= 200))
+      .tooltip(`One-time AI request via ${label}. Sends bounded diff samples to its configured model; no saved conversation or tools.`));
+  }
 
   updatePanel() {
     const update = this.updates, state = update.state, release = state.latest;
@@ -260,7 +329,7 @@ export default class Annotator extends View {
   }
 
   reviewFiles(snapshot = this.data?.snapshot) {
-    const files = snapshot?.files ?? [], present = new Set(files.map(file => file.path));
+    const files = this.orderedFiles(snapshot), present = new Set(files.map(file => file.path));
     const drafts = [...this.draftPaths()].filter(path => path && !present.has(path));
     return drafts.length ? [...files, ...drafts.map(path => ({ path, status: "draft", rows: [], loaded: false, draftOnly: true,
       note: "Unfinished draft: this file has no diff in this comparison. The text is kept; copy or cancel it, or return when the file changes." }))] : files;
@@ -515,6 +584,7 @@ export default class Annotator extends View {
           this.githubRefresh.invalidate();
         }
         this.data = data;
+        this.observeOrder(data.snapshot);
         this.bases = data.snapshot.bases ?? [];
         this.base = data.snapshot.scope.comparison?.base ?? this.base;
         if (this.mode === "branch") this.rememberBase(data.snapshot.scope, this.base);
@@ -984,6 +1054,9 @@ export default class Annotator extends View {
           .child(this.button("view-github", `GitHub · ${threads.length}`, cx => { this.view = "github"; this.refreshGithub(cx); cx.notify(); }, true, this.view === "github" ? "secondary" : "quiet"))
          .when(summary.outdated > 0, el => el.child(this.badge(`${summary.outdated} outdated`, t.ansi3, t.ansi3 + "18"))))
        .when(this.resolvedCount() > 0 || this.showResolved, el => el.child(h_flex().px(6).flex_none().bg(t.chrome).child(this.resolvedFilter("filter-resolved"))))
+        .when(this.view === "diff", el => el.child(h_flex().px(5).gap(3).flex_none().bg(t.chrome)
+          .child(this.orderButton("order-logically"))
+          .when(Boolean(this.orderEntry()?.files), el => el.child(this.button("reset-file-order", "Reset order", cx => this.resetOrder(cx))))))
         .child(h_flex().id("files-scope-row").h(31).flex_none().px(5).gap(3).items_center().bg(t.chrome)
         .when(this.view === "diff", el => el.child(this.button("toggle-files", `${this.filesOpen ? "▾" : "▸"} Files · ${data ? files.length : "—"}`, cx => { this.filesOpen = !this.filesOpen; cx.notify(); })))
         .when(this.view !== "diff", el => el.child(this.button("filter-unread", this.onlyUnread ? "● Unread only" : "All comments", cx => { this.onlyUnread = !this.onlyUnread; cx.notify(); })))

@@ -54,6 +54,17 @@ check the chat before an explicit retry.
 
 ![Review after delivery, with sent comments hidden and recoverable](docs/images/sent.png)
 
+## Logical file order
+
+Click **Order logically** in the sidebar or full review to arrange changed files
+for reading. **Reset order** restores Git order. Click **AI: OpenCode / Pi** to
+switch runners. Both run on the app machine using their configured model/auth;
+OpenCode requires V2, while Pi runs through local Herdr Core (`hc exec`). Each
+ordering click sends one AI request with paths and bounded diff samples,
+including for SSH checkouts. No tools, saved conversation, or messages to your
+working chat. Pi extensions, MCP, skills, prompt templates and context files are
+disabled for this call. Normal model usage costs apply. Supports 2–200 files.
+
 ## Ask without drafting a review
 
 Right-click a source line or hunk header to ask about it. For a range, select it

@@ -225,6 +225,8 @@ export function renderFull(self, cx) {
     .when(Boolean(self.notice && !self.error), el => el.child(div().px(16).py(8).text_size(12).text_color(t.muted).child(self.notice)))
     .child(h_flex().h(36).px(12).gap(8).items_center().flex_none().border_b(1).border_color(t.border)
       .child(self.button("full-toggle-files", self.filesOpen ? "Hide files" : "Show files", cx => { self.filesOpen = !self.filesOpen; self.rememberFull({ filesOpen: self.filesOpen }); cx.notify(); }))
+      .child(self.orderButton("full-order-logically"))
+      .when(Boolean(self.orderEntry()?.files), el => el.child(self.button("full-reset-file-order", "Reset order", cx => self.resetOrder(cx))))
        .child(self.button("full-unread", self.onlyUnread ? "● Unread only" : `All comments · ${unread} unread`, cx => { self.onlyUnread = !self.onlyUnread; self.rememberFull({ onlyUnread: self.onlyUnread }); cx.notify(); }, true, "secondary"))
        .when(self.resolvedCount() > 0 || self.showResolved, el => el.child(self.resolvedFilter("full-resolved")))
       .child(div().flex_1())

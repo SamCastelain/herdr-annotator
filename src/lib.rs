@@ -1,6 +1,7 @@
 mod git;
 mod github;
 mod model;
+mod ordering;
 mod preparation;
 mod process;
 mod question;
@@ -34,6 +35,15 @@ impl Engine {
     }
 
     pub fn handle(&self, request: Request) -> Result<Value> {
+        if let Request::Order {
+            scope,
+            revision,
+            view,
+            runner,
+        } = request
+        {
+            return ordering::order(&self.state_dir, &scope, &revision, &view, runner);
+        }
         process::within_budget(|| self.handle_request(request))
     }
 
@@ -72,6 +82,7 @@ impl Engine {
             preparation::PreparedReview::open(&self.state_dir, request.scope(), &request.view())?;
         let snapshot = &review.visible;
         match request {
+            Request::Order { .. } => unreachable!("Ordering uses its own generation budget"),
             Request::Snapshot { .. } => (),
             Request::Add {
                 revision,

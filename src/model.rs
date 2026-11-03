@@ -71,9 +71,25 @@ pub struct ThreadRef {
     pub fingerprint: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderingRunner {
+    #[default]
+    Opencode,
+    Pi,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    Order {
+        scope: Scope,
+        revision: String,
+        #[serde(default)]
+        runner: OrderingRunner,
+        #[serde(default)]
+        view: ViewSpec,
+    },
     Snapshot {
         scope: Scope,
         #[serde(default)]
@@ -183,6 +199,7 @@ impl Request {
     pub fn scope(&self) -> &Scope {
         match self {
             Self::Snapshot { scope, .. }
+            | Self::Order { scope, .. }
             | Self::Add { scope, .. }
             | Self::Edit { scope, .. }
             | Self::Delete { scope, .. }
@@ -199,6 +216,7 @@ impl Request {
     pub fn view(&self) -> ViewSpec {
         match self {
             Self::Snapshot { view, .. }
+            | Self::Order { view, .. }
             | Self::Add { view, .. }
             | Self::Edit { view, .. }
             | Self::Delete { view, .. }

@@ -69,6 +69,20 @@ export function fileStats(file) {
     removed: file.rows.filter(r => r.kind === "delete").length };
 }
 
+// Revision includes the selected preview. Keep reading order across navigation,
+// but isolate checkouts/comparisons/heads and invalidate observed changed previews.
+export function reviewOrderKey(snapshot) {
+  return snapshot ? JSON.stringify([snapshot.scope, snapshot.branch, snapshot.head, snapshot.baseline,
+    snapshot.files.map(file => [file.path, file.status])]) : null;
+}
+
+export function orderedReviewFiles(snapshot, order) {
+  const files = snapshot?.files ?? [];
+  if (!Array.isArray(order) || order.length !== files.length || new Set(order).size !== files.length) return files;
+  const byPath = new Map(files.map(file => [file.path, file]));
+  return order.every(path => byPath.has(path)) ? order.map(path => byPath.get(path)) : files;
+}
+
 export function pathParts(path) {
   const parts = path.split("/");
   return { name: parts.pop(), folder: parts.join("/") };

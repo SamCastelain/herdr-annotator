@@ -1153,3 +1153,90 @@ test("save shortcut requires composer focus; confirmed Send never redirects to a
   assert.equal(h.state.commands.length, 0);
 });
 
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} logical order uses one request and preserves draft, open file and source chat`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  const snapshot = h.mod.data.snapshot;
+  snapshot.view = { file: "a.rs", context: 3 };
+  snapshot.files.push({ path: "b.rs", status: "M", rows: [], loaded: false });
+  h.mod.open = "a.rs"; h.mod.editor.set_value("Keep my draft");
+  h.mod.selection = { side: "new", start: 2, end: 2, origin: 2 };
+  const selection = h.mod.selection;
+  h.state.reply = async request => ({ code: 0, stdout: JSON.stringify({ ok: true,
+    data: { files: ["b.rs", "a.rs"], revision: request.revision } }) });
+  h.mod.render(h.cx);
+  assert.equal(h.requests.filter(r => r.op === "order").length, 0);
+  h.mod.orderLogically(h.cx); h.mod.orderLogically(h.cx);
+  await h.drain();
+  assert.equal(h.requests.filter(r => r.op === "order").length, 1);
+  assert.equal(h.requests.some(r => r.op === "send" || r.op === "ask"), false);
+  assert.equal(h.mod.orderedFiles().map(f => f.path).join(","), "b.rs,a.rs");
+  assert.equal(snapshot.files.map(f => f.path).join(","), "a.rs,b.rs");
+  assert.equal(h.mod.editor.value(), "Keep my draft");
+  assert.equal(h.mod.open, "a.rs"); assert.equal(h.mod.selection, selection);
+  assert.equal(h.state.commands.length, 0);
+  h.nodes.length = 0; h.mod.render(h.cx);
+  assert.equal(h.state.virtual.key(0), "b.rs");
+  if (full) {
+    h.nodes.find(node => node.id === "full-prev-file").events.on_click({}, h.cx);
+    assert.equal(h.mod.open, "b.rs");
+  }
+  h.mod.resetOrder(h.cx);
+  assert.equal(h.mod.orderedFiles().map(f => f.path).join(","), "a.rs,b.rs");
+});
+
+test("late and malformed logical orders never change the displayed files", async () => {
+  for (const kind of ["revision", "checkout", "malformed", "closed"]) {
+    const h = harness(); h.mod.init({}, h.cx); await h.drain();
+    h.mod.data.snapshot.files.push({ path: "b.rs", status: "M", rows: [] });
+    let finish;
+    h.state.reply = () => new Promise(resolve => { finish = resolve; });
+    h.mod.orderLogically(h.cx); await Promise.resolve(); await Promise.resolve();
+    assert.ok(finish);
+    if (kind === "revision") h.mod.data.snapshot.revision = "changed";
+    if (kind === "checkout") h.state.scope = { repo: "/other", machine: null };
+    if (kind === "closed") h.mod.close();
+    finish({ code: 0, stdout: JSON.stringify({ ok: true, data: {
+      revision: "r1", files: kind === "malformed" ? ["a.rs", "a.rs"] : ["b.rs", "a.rs"] } }) });
+    await h.drain();
+    assert.equal(h.mod.orderedFiles().map(f => f.path).join(","), "a.rs,b.rs", kind);
+    assert.equal(h.mod.ordering, null);
+    assert.equal(h.state.shared["annotator.fileOrders"], undefined);
+  }
+});
+
+test("logical order survives preview navigation but invalidates an observed changed preview", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const snapshot = h.mod.data.snapshot;
+  snapshot.view = { file: "a.rs", context: 3 };
+  snapshot.files.push({ path: "b.rs", status: "M", rows: [] });
+  h.state.reply = async request => ({ code: 0, stdout: JSON.stringify({ ok: true,
+    data: { files: ["b.rs", "a.rs"], revision: request.revision } }) });
+  h.mod.orderLogically(h.cx); await h.drain();
+  snapshot.view = { file: "b.rs", context: 3 }; snapshot.revision = "b-preview";
+  h.mod.observeOrder(snapshot);
+  assert.equal(h.mod.orderedFiles()[0].path, "b.rs");
+  snapshot.revision = "b-changed"; h.mod.observeOrder(snapshot);
+  assert.equal(h.mod.orderedFiles()[0].path, "a.rs");
+});
+
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} runner switch selects Pi without launching it`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.data.snapshot.files.push({ path: "b.rs", status: "M", rows: [] });
+  h.mod.render(h.cx);
+  const id = full ? "full-order-logically-runner" : "order-logically-runner";
+  assert.equal(h.mod.orderRunner(), "opencode");
+  h.nodes.find(node => node.id === id).events.on_click({}, h.cx);
+  assert.equal(h.mod.orderRunner(), "pi");
+  assert.equal(h.requests.some(request => request.op === "order"), false);
+  h.state.reply = async request => ({ code: 0, stdout: JSON.stringify({ ok: true,
+    data: { files: ["b.rs", "a.rs"], revision: request.revision } }) });
+  h.mod.orderLogically(h.cx); await h.drain();
+  assert.equal(h.requests.filter(request => request.op === "order").length, 1);
+  assert.equal(h.requests.at(-1).runner, "pi");
+  assert.equal(h.mod.orderedFiles()[0].path, "b.rs");
+  assert.equal(h.state.commands.length, 0);
+  const next = harness(); next.state.shared = h.state.shared;
+  assert.equal(next.mod.orderRunner(), "pi");
+});

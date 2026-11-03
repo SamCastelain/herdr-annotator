@@ -19,6 +19,10 @@ pub(crate) fn within_budget<T>(work: impl FnOnce() -> T) -> T {
     with_deadline(Instant::now() + BUDGET, work)
 }
 
+pub(crate) fn within_generation_budget<T>(work: impl FnOnce() -> T) -> T {
+    with_deadline(Instant::now() + Duration::from_secs(120), work)
+}
+
 fn with_deadline<T>(deadline: Instant, work: impl FnOnce() -> T) -> T {
     struct Restore(Option<Instant>);
     impl Drop for Restore {
