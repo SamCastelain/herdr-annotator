@@ -52,7 +52,9 @@ export default class Annotator extends View {
     this.editor.on("change", (_e, cx) => { this.publishUpdateState(); cx.notify(); });
     this.editor.on("focus", () => { this.editorFocused = true; });
     this.editor.on("blur", () => { this.editorFocused = false; });
-    this.editor.on("submit", (event, cx) => { if (event.secondary && !event.shift) this.saveComment(cx); });
+    this.editor.on("submit", (event, cx) => {
+      if (event.secondary && !event.shift && !event.is_held && !event.alt) this.reviewShortcut(cx, true);
+    });
     this.output = TextareaState.new({ placeholder: "Exported review", rows: 6 });
     this.blankReviewNote = this.createReviewNote();
     this.ensureReviewNote(contextKey());
@@ -464,10 +466,27 @@ export default class Annotator extends View {
 
   handleKey(event, cx) {
     const chord = ["cmd-enter", "ctrl-enter", "cmd-return", "ctrl-return"].includes(event.keystroke);
-    if (chord && this.editorFocused && !event.is_held && !event.modifiers?.shift && !event.modifiers?.alt) {
-      cx.stop_propagation(); this.saveComment(cx); return;
+    if (chord && !event.is_held && !event.modifiers?.shift && !event.modifiers?.alt) {
+      // Textareas own their submit events. Handling the same press here too
+      // could send after an asynchronous comment save has emptied the editor.
+      if (this.editorFocused || this.reviewNoteFocused) return;
+      if (this.reviewShortcut(cx)) cx.stop_propagation();
+      return;
     }
     if (event.key === "escape") { this.requeue = null; this.exportText = null; cx.notify(); }
+  }
+
+  reviewShortcut(cx, commentComposer = this.editorFocused) {
+    // Nested editors keep their own shortcuts. Never send a batch while a reply,
+    // ref picker, or unfinished comment elsewhere in this comparison is open.
+    if (this.busy || this.snapshotError || this.baseOpen || this.scopeMenuOpen || this.editDraft || this.questionDraft
+      || [...this.githubDrafts.keys()].some(key => JSON.parse(key)[0] === this.context)) return false;
+    if (this.editor.value().trim()) {
+      if (!commentComposer) return false;
+      this.saveComment(cx); return true;
+    }
+    if (this.hasReviewDrafts()) return false;
+    this.sendToSession(cx); return true;
   }
 
   prepareSyntax(snapshot) {
@@ -692,7 +711,12 @@ export default class Annotator extends View {
 
   createReviewNote() {
     const editor = TextareaState.new({ placeholder: "General note (optional)…", rows: 2 });
+    editor.on("focus", () => { this.reviewNoteFocused = true; });
+    editor.on("blur", () => { this.reviewNoteFocused = false; });
     editor.on("change", (_event, cx) => { this.publishUpdateState(); cx.notify(); });
+    editor.on("submit", (event, cx) => {
+      if (event.secondary && !event.shift && !event.is_held && !event.alt) this.reviewShortcut(cx, false);
+    });
     return { editor, uncertain: false };
   }
 
@@ -1155,7 +1179,7 @@ export default class Annotator extends View {
             .child(div().text_size(10.5).text_color(t.dim).child(`${pending.length} comments · ${this.threadQueue.size} GitHub threads ready`)))
           .when(Boolean(target), el => el.child(this.badge(target.status === "idle" ? "Ready" : target.status === "blocked" ? "Needs you" : "Working", target.status === "idle" ? t.ansi2 : t.ansi3)))
           .child(this.button("export-review", "Export…", cx => this.act("export", { threads: [...this.threadQueue.values()] }, cx), batchSize > 0)))
-        .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && target?.status === "idle" && !reviewDrafts && !this.reviewNote.uncertain, "primary").w_full().h(33))
+        .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && target?.status === "idle" && !reviewDrafts && !this.reviewNote.uncertain, "primary").w_full().h(33).tooltip("Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished"))
         .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : batchSize && !reviewDrafts && target?.status === "idle" ? "One click submits comments, selected GitHub threads, and your general note to this session." : sendHint(allComments, target, reviewDrafts))));
   }
 }

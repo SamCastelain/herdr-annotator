@@ -72,7 +72,7 @@ that source binding or enable the full presentation.
    lines. The range label shows which side was selected.
 3. Write a multiline note and click **Save comment**. **Whole file** clears the range.
     A line comment spans at most 200 consecutive visible source lines.
-    **⌘Enter / Ctrl+Enter** in the composer saves the draft without sending it;
+    **⌘Enter / Ctrl+Enter** in the composer saves a nonempty draft without sending it;
     plain Enter still inserts a newline.
 4. Saved comments appear beneath their anchor. **Code** shows the diff; **Comments**
    lists every saved note across files. Cards show their range and status:
@@ -85,6 +85,11 @@ that source binding or enable the full presentation.
    to restore the text and anchor. Changed code requires reselection before
    saving. Closing/reloading loses unsaved drafts, not saved comments.
 6. **Export** shows selectable feedback text without sending anything.
+   With no unfinished comments in the current comparison, **⌘Enter / Ctrl+Enter**
+   sends the saved review and general note. This works in either review view,
+   including from the empty comment composer or general-note field. A press that
+   saves a comment never also sends the batch. Unfinished replies/ref pickers
+   keep their own keyboard behavior. Normal delivery guards still apply.
 7. The panel binds automatically to the **open agent session in the current tab**.
     Click **Send review** once. It immediately submits the saved batch using
    `hc send --if idle`, including Enter; there is no second confirmation.

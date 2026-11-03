@@ -52,6 +52,10 @@ with file paths and source excerpts. It uses the chat in your source tab and
 requires an idle agent. It does not choose a chat in another tab or force text
 into a busy agent.
 
+**⌘Enter / Ctrl+Enter** saves the comment you are typing. With no unfinished
+comments in this comparison, it sends the review, including your general note.
+It never saves a comment and sends the review in the same press.
+
 After confirmed delivery, sent comments disappear from lists, diffs, and badges.
 **Show sent/resolved** reveals the history. Uncertain delivery stays visible;
 check the chat before an explicit retry.

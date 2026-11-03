@@ -1169,6 +1169,7 @@ test("save shortcut requires composer focus; confirmed Send never redirects to a
   await h.drain(); assert.equal(h.requests.filter(r => r.op === "add").length, 0);
   h.mod.editor.focus();
   h.mod.handleKey({ key: "enter", keystroke: "ctrl-enter", modifiers: { control: true } }, h.cx);
+  h.mod.editor.emit("submit", { secondary: true });
   await h.drain(); assert.equal(h.requests.filter(r => r.op === "add").length, 1);
   h.state.reply = async () => {
     h.state.agents = [{ address: "t8", pane: "p8", space: "space1", tab: "tab1", status: "idle" }];
@@ -1322,4 +1323,65 @@ test("sidebar full-review button focuses its existing live review without replac
   assert.equal(h.state.commands.at(-1).name, "pane.focus");
   assert.equal(h.state.commands.at(-1).args.pane, "review-pane");
   assert.equal(h.mod.editor.value(), "Keep my source draft");
+});
+
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} Cmd/Ctrl Enter sends the review only when no comment is unfinished`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.editor.set_value("Save this comment first"); h.mod.editor.focus();
+  const chord = { key: "enter", keystroke: "cmd-enter", modifiers: { platform: true } };
+  h.mod.handleKey(chord, h.cx); h.mod.editor.emit("submit", { secondary: true });
+  await h.drain();
+  assert.equal(h.requests.filter(request => request.op === "add").length, 1);
+  assert.equal(h.requests.filter(request => request.op === "send").length, 0);
+  h.mod.handleKey(chord, h.cx); h.mod.editor.emit("submit", { secondary: true });
+  await h.drain();
+  assert.equal(h.requests.filter(request => request.op === "send").length, 1);
+});
+
+test("Cmd/Ctrl Enter sends outside an empty composer and includes general notes", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.reviewNote.editor.set_value("Overall direction");
+  h.mod.handleKey({ key: "enter", keystroke: "ctrl-enter", modifiers: { control: true } }, h.cx);
+  await h.drain();
+  assert.equal(h.requests.at(-1).op, "send");
+  assert.equal(h.requests.at(-1).note, "Overall direction");
+  const noteOnly = harness(); noteOnly.mod.init({}, noteOnly.cx); await noteOnly.drain();
+  noteOnly.mod.data.comments = []; noteOnly.mod.reviewNote.editor.set_value("Note-only review");
+  noteOnly.mod.reviewNote.editor.emit("submit", { secondary: true }); await noteOnly.drain();
+  assert.equal(noteOnly.requests.at(-1).op, "send");
+  assert.equal(noteOnly.requests.at(-1).note, "Note-only review");
+});
+
+test("review shortcut respects unfinished editors, hidden drafts and delivery guards", async () => {
+  for (const blocked of ["unfocused-comment", "hidden-comment", "edit", "question", "reply", "base", "busy-agent", "missing-agent", "offline", "uncertain", "held", "shift", "alt", "plain"]) {
+    const h = harness(); h.mod.init({}, h.cx); await h.drain();
+    const chord = { key: "enter", keystroke: "cmd-enter", modifiers: { platform: true } };
+    if (blocked === "unfocused-comment") h.mod.editor.set_value("Unfinished comment");
+    if (blocked === "hidden-comment") h.mod.navigationDrafts.set(JSON.stringify([h.mod.comparisonKey(), "b.rs"]), { body: "Unfinished hidden comment" });
+    if (blocked === "edit") h.mod.beginEdit(h.mod.data.comments[0], h.cx);
+    if (blocked === "question") h.mod.beginQuestion({ kind: "file" }, h.cx);
+    if (blocked === "reply") h.mod.githubDrafts.set(JSON.stringify([h.mod.context, "thread"]), { editor: { value: () => "Pending reply" } });
+    if (blocked === "base") h.mod.baseOpen = true;
+    if (blocked === "busy-agent") h.state.agents[0].status = "working";
+    if (blocked === "missing-agent") h.state.agents = [];
+    if (blocked === "offline") h.mod.snapshotFailed("Connection timed out", h.state.scope);
+    if (blocked === "uncertain") h.mod.reviewNote.uncertain = true;
+    if (blocked === "held") chord.is_held = true;
+    if (blocked === "shift") chord.modifiers.shift = true;
+    if (blocked === "alt") chord.modifiers.alt = true;
+    if (blocked === "plain") { chord.keystroke = "enter"; chord.modifiers = {}; }
+    h.mod.handleKey(chord, h.cx); await h.drain();
+    assert.equal(h.requests.some(request => request.op === "send"), false, blocked);
+  }
+});
+
+test("a composer submit followed by a delayed parent key event cannot also send the batch", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.editor.set_value("Save, do not send"); h.mod.editor.focus();
+  h.mod.editor.emit("submit", { secondary: true }); await h.drain();
+  h.mod.handleKey({ key: "enter", keystroke: "cmd-enter", modifiers: { platform: true } }, h.cx);
+  await h.drain();
+  assert.equal(h.requests.filter(request => request.op === "add").length, 1);
+  assert.equal(h.requests.filter(request => request.op === "send").length, 0);
 });

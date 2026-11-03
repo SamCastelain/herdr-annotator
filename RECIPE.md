@@ -86,7 +86,11 @@ delivery before the core call so a crash/reply loss never silently resends.
 Requeue requires another explicit decision. Tests never send to a real agent.
 After confirmed delivery, focus the exact recipient pane. Never focus another
 chat if it disappeared, and never change focus on failed or uncertain delivery.
-Cmd+Enter / Ctrl+Enter in the composer saves one comment, never sends the batch.
+Cmd+Enter / Ctrl+Enter saves one comment when its composer contains text. With no
+unfinished comments in the comparison, the shortcut sends the batch instead,
+including from an empty composer or the general-note field. One press must never
+save and send. Keep nested edit/question/reply/ref-picker shortcuts separate;
+ignore held/shift/alt chords and retain all normal delivery guards.
 Plain Enter stays multiline; the save action obeys stale/offline/busy guards.
 Local Edit/Delete require the expected saved body and current revision. Preserve
 the anchor and delivery history; only open, unsent notes are editable/deletable.

@@ -185,7 +185,7 @@ export function renderFull(self, cx) {
         .child(self.button("full-cancel", "Cancel", cx => self.cancelDraft(cx))))
       .child(Textarea.new(self.editor).h(70).w_full().text_size(13))
       .child(h_flex().justify_between().items_center()
-        .child(div().text_size(11).text_color(t.dim).child("⌘Enter / Ctrl+Enter saves · does not send"))
+        .child(div().text_size(11).text_color(t.dim).child("⌘Enter / Ctrl+Enter saves this comment · sends review when no comments are unfinished"))
         .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), self.canSaveComment(), "primary")))));
 
   const inspector = () => v_flex().size_full().min_h(0).bg(t.chrome).border_l(1).border_color(t.border)
@@ -256,5 +256,5 @@ export function renderFull(self, cx) {
         .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${target.address} · ${target.status}` : "Source chat unavailable · sending disabled"))
         .child(div().text_size(11).text_color(t.dim).child(self.snapshotError ? `${snapshot ? "Cached review · " : ""}Refresh must succeed before saving or sending.` : reviewDrafts ? "Save or cancel unfinished comments in this comparison before sending." : `${pending.length} local comments · ${self.threadQueue.size} GitHub threads ready`)))
       .child(self.button("full-export", "Export…", cx => self.act("export", { threads: [...self.threadQueue.values()] }, cx), batch > 0))
-      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !reviewDrafts && !self.reviewNote.uncertain, "primary")));
+      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !reviewDrafts && !self.reviewNote.uncertain, "primary").tooltip("Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished")));
 }
