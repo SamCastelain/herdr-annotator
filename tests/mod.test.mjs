@@ -33,15 +33,19 @@ function harness() {
     if (state.forbidNewInputs) throw new Error("Native input state cannot be created during render");
     let value = options.value ?? "";
     const events = {};
-    return { value: () => value, set_value(v) { value = v; }, on(name, fn) { events[name] = fn; },
-      focus() { events.focus?.({}, cx); }, emit(name, event) { events[name]?.(event, cx); }, release() {} };
+    const input = { value: () => value, set_value(v) { value = v; }, on(name, fn) { events[name] = fn; },
+      focus() {
+        state.focusedInput?.emit("blur", {}); state.focusedInput = input; state.reviewFocused = false;
+        events.focus?.({}, cx);
+      }, emit(name, event) { events[name]?.(event, cx); }, release() {} };
+    return input;
   }
   const snapshot = () => ({
     snapshot: { scope: { ...state.scope }, branch: "main", head: "head1", revision: state.revision,
       files: [{ path: "a.rs", status: " M", rows: [{ kind: "add", old: null, new: 2, text: "changed" }], loaded: true, truncated: false }], limited: false },
     comments: [{ id: "note1", path: "a.rs", body: "Inline note", stale: false, resolved: false, delivery: null, position: { side: "new", start: 2, end: 2 } }],
   });
-  const cx = { notify() {}, stop_propagation() {}, write_to_clipboard: text => { state.clipboard = text; }, focus_handle: () => ({}), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
+  const cx = { notify() {}, stop_propagation() {}, write_to_clipboard: text => { state.clipboard = text; }, focus_handle: () => ({ focus() { state.focusedInput?.emit("blur", {}); state.focusedInput = null; state.reviewFocused = true; }, is_focused: () => Boolean(state.reviewFocused) }), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
   const storage = new Map();
   const context = {
     ...review, ...syntax, DraftLifecycle, GithubRefresh, UpdateController,
@@ -1376,12 +1380,40 @@ test("review shortcut respects unfinished editors, hidden drafts and delivery gu
   }
 });
 
-test("a composer submit followed by a delayed parent key event cannot also send the batch", async () => {
+test("saving a full-view comment keeps the empty native composer mounted for the second shortcut", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.full = true;
+  h.mod.composerOpen = true;
   h.mod.editor.set_value("Save, do not send"); h.mod.editor.focus();
   h.mod.editor.emit("submit", { secondary: true }); await h.drain();
-  h.mod.handleKey({ key: "enter", keystroke: "cmd-enter", modifiers: { platform: true } }, h.cx);
-  await h.drain();
   assert.equal(h.requests.filter(request => request.op === "add").length, 1);
   assert.equal(h.requests.filter(request => request.op === "send").length, 0);
+  assert.equal(h.mod.composerOpen, true);
+  assert.equal(h.state.focusedInput, h.mod.editor, "the second shortcut must reach the same native textarea");
+  assert.equal(h.mod.editorFocused, true);
+  // Parent events must not duplicate the first textarea submit.
+  h.mod.handleKey({ key: "enter", keystroke: "cmd-enter", modifiers: { platform: true } }, h.cx);
+  await h.drain();
+  assert.equal(h.requests.filter(request => request.op === "send").length, 0);
+  h.mod.editor.emit("submit", { secondary: true });
+  await h.drain();
+  assert.equal(h.requests.filter(request => request.op === "send").length, 1);
 });
+
+test("native mod focus requests give the review pane a keyboard target", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.handleCommand("focus", h.cx);
+  assert.equal(h.state.reviewFocused, true);
+});
+
+test("saving does not steal keyboard focus after switching to a different pane", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain(); h.mod.full = true;
+  let finish;
+  h.state.reply = () => new Promise(resolve => { finish = resolve; });
+  h.mod.editor.set_value("Save this note"); h.mod.editor.focus();
+  h.mod.editor.emit("submit", { secondary: true }); await Promise.resolve(); await Promise.resolve();
+  h.state.focus = { ...h.state.focus, pane: "another-pane" };
+  finish({ code: 0, stdout: JSON.stringify({ ok: true, data: h.snapshot() }) }); await h.drain();
+  assert.notEqual(h.state.reviewFocused, true);
+});
+

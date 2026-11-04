@@ -16,6 +16,7 @@ function location() {
   return fixed?.scope ? reviewLocation(fixed) : reviewLocation(null, focused(), spaces(), panes(), agents());
 }
 const contextKey = () => JSON.stringify(location());
+const focusOwner = () => { const f = focused(); return JSON.stringify([f?.space, f?.tab, f?.pane]); };
 
 export default class Annotator extends View {
   init(_props, cx) {
@@ -436,7 +437,8 @@ export default class Annotator extends View {
   }
 
   handleCommand(command, cx) {
-    if (command === "submit") this.sendToSession(cx);
+    if (command === "focus") this.focusReview();
+    else if (command === "submit") this.sendToSession(cx);
     else if (command === "ask") this.beginQuestion(this.selection ? { kind: "selection", selection: selectionPayload(this.selection) } : { kind: "file" }, cx);
     else if (command === "scope") {
       const modes = ["uncommitted", "last_commit", "branch"];
@@ -474,6 +476,11 @@ export default class Annotator extends View {
       return;
     }
     if (event.key === "escape") { this.requeue = null; this.exportText = null; cx.notify(); }
+  }
+
+  focusReview() {
+    this.editorFocused = false; this.reviewNoteFocused = false;
+    this.handle.focus();
   }
 
   reviewShortcut(cx, commentComposer = this.editorFocused) {
@@ -639,6 +646,7 @@ export default class Annotator extends View {
   act(op, details, cx) {
     if (this.busy || this.snapshotError || !this.data || contextKey() !== this.context) return;
     const context = this.context;
+    const originalFocus = focusOwner();
     const snapshot = this.data.snapshot;
     const draftToken = op === "add" ? this.draft.capture(context) : null;
     const editToken = op === "edit" ? this.editDraft : null;
@@ -662,7 +670,16 @@ export default class Annotator extends View {
         }
         if (op === "export") { this.exportText = data.text; this.output.set_value(data.text); }
         else { this.data = data; this.prepareSyntax(data.snapshot); }
-        if (draftToken) { this.draft.complete(draftToken, this.context); this.activeComment = null; this.activeCommentIds = null; this.notice = "Comment saved. It is ready to send with your review."; }
+        if (draftToken) {
+          const completed = this.draft.complete(draftToken, this.context);
+          // Keep the native input mounted after a keyboard save. Removing it
+          // strands focus, so a second Cmd/Ctrl+Enter never emits submit.
+          // Don't reopen/focus it if the person moved to another pane.
+          if (completed && this.editorFocused && focusOwner() === originalFocus) {
+            this.composerOpen = true; this.editor.focus();
+          }
+          this.activeComment = null; this.activeCommentIds = null; this.notice = "Comment saved. It is ready to send with your review.";
+        }
         if (editToken) this.notice = "Comment updated.";
         if (contextKey() !== context) return;
         if (op === "send") {
@@ -909,7 +926,7 @@ export default class Annotator extends View {
         .text_color(active ? t.accent_foreground : t.dim).font_semibold())
       .when(variant === "secondary", el => el.bg(t.surface).border_1().border_color(t.border))
       .when(active, el => el.cursor_pointer().hover(s => variant === "primary" ? s.opacity(0.85) : s.bg(t.hover))
-        .on_click((_e, cx) => { action(cx); this.publishUpdateState(); })).child(text);
+        .on_click((_e, cx) => { this.focusReview(); action(cx); this.publishUpdateState(); })).child(text);
   }
 
   badge(text, color, background = null) {
@@ -919,6 +936,7 @@ export default class Annotator extends View {
 
   selectFile(path, cx) {
     if (this.busy) return;
+    this.focusReview();
     if (path === this.open) {
       this.view = "diff";
       if (!this.data?.snapshot.files.find(file => file.path === path)?.loaded) this.refresh(cx, false, true);

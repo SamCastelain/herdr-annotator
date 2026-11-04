@@ -91,6 +91,10 @@ unfinished comments in the comparison, the shortcut sends the batch instead,
 including from an empty composer or the general-note field. One press must never
 save and send. Keep nested edit/question/reply/ref-picker shortcuts separate;
 ignore held/shift/alt chords and retain all normal delivery guards.
+After a keyboard save, keep the empty native comment composer mounted and
+focused so the next press still emits submit. Mod focus commands and review
+controls must also give the review's own keyboard handle focus. Never reclaim
+focus after an async save if the person switched to another pane.
 Plain Enter stays multiline; the save action obeys stale/offline/busy guards.
 Local Edit/Delete require the expected saved body and current revision. Preserve
 the anchor and delivery history; only open, unsent notes are editable/deletable.
