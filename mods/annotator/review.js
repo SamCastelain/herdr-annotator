@@ -27,6 +27,24 @@ export function selectionPayload(selection) {
   return { side, start, end };
 }
 
+export function reviewedDraft(snapshot, path, selection) {
+  const file = snapshot?.files.find(file => file.path === path);
+  if (!file?.loaded) return null;
+  let lines = null;
+  if (selection) {
+    const source = file.rows.filter(row => row[selection.side] != null);
+    const start = source.findIndex(row => row[selection.side] === selection.start);
+    const count = selection.end - selection.start + 1, selected = source.slice(start, start + count);
+    if (start < 0 || count < 1 || count > 200 || selected.length !== count
+      || !selected.every((row, index) => row[selection.side] === selection.start + index)) return null;
+    lines = { selection: selectionPayload(selection), selected: selected.map(row => row.text),
+      before: source.slice(Math.max(0, start - 2), start).map(row => row.text),
+      after: source.slice(start + count, start + count + 2).map(row => row.text) };
+  }
+  const reviewed = { branch: snapshot.branch ?? null, head: snapshot.head ?? null, baseline: snapshot.baseline ?? null, anchor: { lines } };
+  return JSON.stringify(reviewed).length <= 32768 ? reviewed : null;
+}
+
 export function escapeText(value) {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }

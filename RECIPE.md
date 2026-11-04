@@ -54,7 +54,11 @@ review actions; connection, permission and corrupt-repository failures stay erro
 File notes use no range. Clicking old-only deletions selects old lines; other
 source rows select new lines. Shift-click extends on the same side. Saved notes
 support resolve/reopen; unsaved drafts stay in memory per context. Refresh every
-15 seconds except during a draft. A changed revision requires reselection.
+15 seconds except during a draft. Saving includes the reviewed source anchor:
+unrelated edits and uniquely matched moved lines do not require refresh/reselection.
+Changed or ambiguous source and branch/comparison changes refuse the save while
+preserving draft text. Legacy saves without reviewed context still require the
+original revision. Sending retains its revision guard.
 List all changed files, loading only selected/annotated diffs. Branch scope includes
 committed and uncommitted work since merge-base; never fetch refs automatically.
 Unchanged lines accept annotations; collapsing the preview preserves their anchors.

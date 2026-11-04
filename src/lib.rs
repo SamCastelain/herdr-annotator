@@ -90,9 +90,12 @@ impl Engine {
                 path,
                 selection,
                 body,
+                reviewed,
                 ..
             } => {
-                snapshot.require_revision(&revision)?;
+                if reviewed.is_none() {
+                    snapshot.require_revision(&revision)?;
+                }
                 if body.trim().is_empty() || body.len() > 16_384 {
                     return Err("Comment must contain 1–16384 bytes".into());
                 }
@@ -104,7 +107,14 @@ impl Engine {
                     .iter()
                     .find(|f| f.path == path)
                     .ok_or("File is no longer in this diff")?;
-                let anchor = Anchor::create(file, selection)?;
+                let anchor = if snapshot.revision != revision {
+                    reviewed
+                        .as_ref()
+                        .ok_or("Missing reviewed context")?
+                        .current_anchor(snapshot, file, selection)?
+                } else {
+                    Anchor::create(file, selection)?
+                };
                 store.comments.push(Comment {
                     id: new_id(),
                     path,

@@ -101,6 +101,18 @@ function harness() {
   return { mod, nodes, requests, state, cx, drain, snapshot };
 }
 
+test("saving sends the reviewed source anchor and keeps text on stale-code refusal", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.selection = { side: "new", start: 2, end: 2 };
+  h.mod.editor.set_value("Keep my draft");
+  h.state.reply = () => ({ code: 0, stdout: JSON.stringify({ ok: false, error: "The selected code changed" }) });
+  h.mod.saveComment(h.cx); await h.drain();
+  const request = h.requests.find(request => request.op === "add");
+  assert.deepEqual(request.reviewed, { branch: "main", head: "head1", baseline: null,
+    anchor: { lines: { selection: { side: "new", start: 2, end: 2 }, selected: ["changed"], before: [], after: [] } } });
+  assert.equal(h.mod.editor.value(), "Keep my draft");
+});
+
 test("switching worktrees supersedes a pending snapshot without waiting for the old remote", async () => {
   const h = harness(), pending = [];
   h.state.reply = request => {

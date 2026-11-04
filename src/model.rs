@@ -102,6 +102,8 @@ pub enum Request {
         selection: Option<Selection>,
         body: String,
         #[serde(default)]
+        reviewed: Option<ReviewedDraft>,
+        #[serde(default)]
         view: ViewSpec,
     },
     Edit {
@@ -307,6 +309,48 @@ pub struct LineAnchor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Anchor {
     pub lines: Option<LineAnchor>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewedDraft {
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub baseline: Option<String>,
+    pub anchor: Anchor,
+}
+
+impl ReviewedDraft {
+    pub(crate) fn current_anchor(
+        &self,
+        snapshot: &Snapshot,
+        file: &ChangedFile,
+        selection: Option<Selection>,
+    ) -> Result<Anchor> {
+        if self.branch != snapshot.branch || (self.branch.is_none() && self.head != snapshot.head) {
+            return Err("The reviewed branch changed. Your draft is kept; return to that branch or select its intended code.".into());
+        }
+        if snapshot.scope.comparison.mode != DiffMode::Uncommitted
+            && self.baseline != snapshot.baseline
+        {
+            return Err("The reviewed comparison changed. Your draft is kept; select its intended code again.".into());
+        }
+        match (&self.anchor.lines, &selection) {
+            (None, None) => (),
+            (Some(lines), Some(selected))
+                if &lines.selection == selected
+                    && selected.start > 0
+                    && selected.end >= selected.start
+                    && selected.end - selected.start < 200
+                    && lines.selected.len() == (selected.end - selected.start + 1) as usize
+                    && lines.before.len() <= 2
+                    && lines.after.len() <= 2 =>
+            {}
+            _ => return Err("Invalid reviewed selection".into()),
+        }
+        let selection = self.anchor.locate(file).ok_or("The selected code changed or is ambiguous. Your draft is kept; select its intended lines again, or choose Whole file.")?;
+        Anchor::create(file, selection)
+    }
 }
 
 fn source(file: &ChangedFile, side: Side) -> Vec<(u32, &str)> {

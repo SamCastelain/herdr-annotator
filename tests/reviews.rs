@@ -95,6 +95,95 @@ fn general_note_exports_alone_or_after_comments_and_validates_size() {
     assert!(text.ends_with("Final direction\n"));
 }
 
+fn draft_context(snapshot: &Value, selection: Option<Selection>) -> Value {
+    let file: ChangedFile =
+        serde_json::from_value(snapshot["snapshot"]["files"][0].clone()).unwrap();
+    json!({"branch":snapshot["snapshot"]["branch"], "head":snapshot["snapshot"]["head"],
+        "baseline":snapshot["snapshot"]["baseline"], "anchor":Anchor::create(&file, selection).unwrap()})
+}
+
+#[test]
+fn saving_a_reviewed_draft_survives_unrelated_edits_and_unique_line_movement() {
+    for moved in [false, true] {
+        let f = Fixture::new(true);
+        f.change();
+        let snapshot = f.snapshot();
+        let selection = Selection {
+            side: Side::New,
+            start: 2,
+            end: 2,
+        };
+        let reviewed = draft_context(&snapshot, Some(selection.clone()));
+        fs::write(f.repo.join("unrelated.txt"), "agent is working\n").unwrap();
+        if moved {
+            fs::write(f.repo.join("file.txt"), "zero\none\nchanged\nthree\n").unwrap();
+        }
+        let result = f
+            .request(
+                json!({"op":"add", "revision":snapshot["snapshot"]["revision"],
+            "view":snapshot["snapshot"]["view"], "path":"file.txt", "selection":selection,
+            "body":"Keep this comment", "reviewed":reviewed}),
+            )
+            .unwrap();
+        assert_eq!(result["comments"][0]["body"], "Keep this comment");
+        assert_eq!(
+            result["comments"][0]["position"]["start"],
+            if moved { 3 } else { 2 }
+        );
+    }
+}
+
+#[test]
+fn stale_draft_saving_never_guesses_changed_ambiguous_or_other_branch_code() {
+    for kind in ["changed", "ambiguous", "branch"] {
+        let f = Fixture::new(true);
+        f.change();
+        let snapshot = f.snapshot();
+        let selection = Selection {
+            side: Side::New,
+            start: 2,
+            end: 2,
+        };
+        let reviewed = draft_context(&snapshot, Some(selection.clone()));
+        match kind {
+            "changed" => fs::write(f.repo.join("file.txt"), "one\ndifferent\nthree\n").unwrap(),
+            "ambiguous" => {
+                fs::write(f.repo.join("file.txt"), "one\nchanged\nchanged\nthree\n").unwrap()
+            }
+            _ => git(&f.repo, &["switch", "-c", "different-branch"]),
+        }
+        let error = f
+            .request(
+                json!({"op":"add", "revision":snapshot["snapshot"]["revision"],
+            "view":snapshot["snapshot"]["view"], "path":"file.txt", "selection":selection,
+            "body":"Do not lose this", "reviewed":reviewed}),
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("selected code") || error.contains("branch"),
+            "{kind}: {error}"
+        );
+        assert_eq!(f.snapshot()["comments"].as_array().unwrap().len(), 0);
+    }
+}
+
+#[test]
+fn file_note_saving_survives_unrelated_changes_in_the_same_review() {
+    let f = Fixture::new(true);
+    f.change();
+    let snapshot = f.snapshot();
+    let reviewed = draft_context(&snapshot, None);
+    fs::write(f.repo.join("unrelated.txt"), "new work\n").unwrap();
+    let result = f
+        .request(
+            json!({"op":"add", "revision":snapshot["snapshot"]["revision"],
+        "view":snapshot["snapshot"]["view"], "path":"file.txt", "selection":null,
+        "body":"Whole file note", "reviewed":reviewed}),
+        )
+        .unwrap();
+    assert_eq!(result["comments"][0]["anchor"]["lines"], Value::Null);
+}
+
 #[test]
 fn automatic_base_does_not_include_upstream_work_when_local_develop_is_stale() {
     let f = Fixture::new(true);
@@ -631,6 +720,7 @@ fn simultaneous_writers_keep_both_notes() {
                         revision,
                         path: "file.txt".into(),
                         selection: None,
+                        reviewed: None,
                         body: format!("note {i}"),
                     })
                     .unwrap()

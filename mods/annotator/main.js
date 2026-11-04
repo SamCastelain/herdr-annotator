@@ -9,7 +9,7 @@ import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
 import { UpdateController } from "./updates.js";
 import { escapeText, copiedDiff, copiedSelection } from "./review.js";
-import { reviewOrderKey, orderedReviewFiles, existingReviewTab } from "./review.js";
+import { reviewOrderKey, orderedReviewFiles, existingReviewTab, reviewedDraft } from "./review.js";
 
 function location() {
   const fixed = props();
@@ -346,7 +346,8 @@ export default class Annotator extends View {
 
   saveComment(cx) {
     if (this.busy || this.snapshotError || !this.canSaveComment()) return;
-    this.act("add", { path: this.open, selection: selectionPayload(this.selection), body: this.editor.value() }, cx);
+    this.act("add", { path: this.open, selection: selectionPayload(this.selection), body: this.editor.value(),
+      reviewed: reviewedDraft(this.data.snapshot, this.open, this.selection) }, cx);
   }
 
   get editDraft() { return this.edits.get(this.navigationKey()); }
