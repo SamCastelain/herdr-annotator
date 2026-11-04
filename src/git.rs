@@ -495,7 +495,21 @@ pub fn parse_diff(patch: &str) -> Result<Vec<DiffLine>> {
     Ok(rows)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum SendStatus {
+    Idle,
+    Working,
+}
+
 pub fn validate_target(scope: &Scope, target: &str) -> Result<()> {
+    inspect_target(scope, target, false).map(|_| ())
+}
+
+pub(crate) fn validate_review_target(scope: &Scope, target: &str) -> Result<SendStatus> {
+    inspect_target(scope, target, true)
+}
+
+fn inspect_target(scope: &Scope, target: &str, allow_working: bool) -> Result<SendStatus> {
     let (machine, address) = match target.split_once('/') {
         Some((m, a)) => (Some(m), a),
         None => (None, target),
@@ -516,11 +530,22 @@ pub fn validate_target(scope: &Scope, target: &str) -> Result<()> {
         return Err("Cannot inspect target agent".into());
     }
     let terminal: Value = serde_json::from_str(&out.text).map_err(|e| e.to_string())?;
-    if terminal["state"] != "live"
-        || terminal["status"]["state"] != "idle"
-        || terminal["status"]["app"].as_str().is_none_or(str::is_empty)
-    {
-        return Err("Target must be a live, reported, idle agent; blocked/working/unreported terminals are refused".into());
+    let status = match terminal["status"]["state"].as_str() {
+        Some("idle") => SendStatus::Idle,
+        Some("working") if allow_working => SendStatus::Working,
+        _ => {
+            return Err(if allow_working {
+                "Target must be an idle or working agent; blocked/unknown states are refused"
+            } else {
+                "Target must be an idle agent; blocked/working/unknown states are refused"
+            }
+            .into());
+        }
+    };
+    if terminal["state"] != "live" || terminal["status"]["app"].as_str().is_none_or(str::is_empty) {
+        return Err(
+            "Target must be a live, reported agent; unreported terminals are refused".into(),
+        );
     }
     let cwd = terminal["foreground"]["cwd"]
         .as_str()
@@ -535,12 +560,20 @@ pub fn validate_target(scope: &Scope, target: &str) -> Result<()> {
     if root.trim_end_matches('\n') != scope.repo {
         return Err("Target agent is in another worktree".into());
     }
-    Ok(())
+    Ok(status)
 }
 
 pub fn send(target: &str, text: &str) -> Result<()> {
+    send_review(target, text, SendStatus::Idle)
+}
+
+pub(crate) fn send_review(target: &str, text: &str, status: SendStatus) -> Result<()> {
     let mut command = hc();
-    command.args(["send", "--if", "idle", target, text]);
+    let status = match status {
+        SendStatus::Idle => "idle",
+        SendStatus::Working => "working",
+    };
+    command.args(["send", "--if", status, target, text]);
     let out = run(command)?;
     if out.code != 0 {
         return Err("herdr-core refused delivery".into());

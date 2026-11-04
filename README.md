@@ -49,8 +49,9 @@ appears after comments and GitHub threads, can be sent alone, and is included in
 
 **Send review** submits saved comments and queued GitHub threads as one message,
 with file paths and source excerpts. It uses the chat in your source tab and
-requires an idle agent. It does not choose a chat in another tab or force text
-into a busy agent.
+accepts an idle or working agent. It never chooses another chat automatically
+or bypasses permission prompts. A working agent may queue or act on the message
+according to its own behavior.
 
 **⌘Enter / Ctrl+Enter** saves the comment you are typing. With no unfinished
 comments in this comparison, it sends the review, including your general note.
@@ -80,7 +81,7 @@ does not depend on the desktop app inheriting your shell's PATH.
 Right-click a source line or hunk header to ask about it. For a range, select it
 and click **Ask selection**; **Ask about diff** includes the open file's diff.
 Type your question, check the recipient, then **Send question**. Saved review
-comments stay untouched. Questions use the same idle-agent check and persist
+comments stay untouched. Questions still require an idle source agent and persist
 delivery uncertainty before sending.
 
 <details>

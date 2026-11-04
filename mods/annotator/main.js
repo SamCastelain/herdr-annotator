@@ -9,7 +9,7 @@ import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
 import { UpdateController } from "./updates.js";
 import { escapeText, copiedDiff, copiedSelection } from "./review.js";
-import { reviewOrderKey, orderedReviewFiles, existingReviewTab, reviewedDraft } from "./review.js";
+import { reviewOrderKey, orderedReviewFiles, existingReviewTab, deliveryBlocker, reviewTargetReady, reviewedDraft } from "./review.js";
 
 function location() {
   const fixed = props();
@@ -433,8 +433,8 @@ export default class Annotator extends View {
       .when(draft.status === "uncertain", el => el.child(div().text_size(11).text_color(theme().ansi3).child("Delivery is uncertain. Check the chat before retrying. Do not change the question or recipient.")))
       .child(h_flex().gap(5)
         .child(this.button("question-cancel", "Close", cx => { this.questions.delete(this.navigationKey()); cx.notify(); }))
-        .child(this.button("question-send", "Send question", cx => this.sendQuestion(cx), Boolean(draft.editor.value().trim()) && target?.status === "idle" && draft.status !== "uncertain", "primary"))
-        .when(draft.status === "uncertain", el => el.child(this.button("question-retry", "I checked chat · Send again", cx => this.sendQuestion(cx, true), target?.status === "idle"))));
+        .child(this.button("question-send", "Send question", cx => this.sendQuestion(cx), Boolean(draft.editor.value().trim()) && reviewTargetReady(target) && draft.status !== "uncertain", "primary"))
+        .when(draft.status === "uncertain", el => el.child(this.button("question-retry", "I checked chat · Send again", cx => this.sendQuestion(cx, true), reviewTargetReady(target)))));
   }
 
   handleCommand(command, cx) {
@@ -715,8 +715,8 @@ export default class Annotator extends View {
     if (!thread && this.reviewNote.uncertain) return;
     if (!thread && !pendingComments(this.data.comments).length && !threads.length && !note.trim()) return;
     const target = this.currentSession();
-    if (!target || target.status !== "idle") {
-      this.notice = target ? `The open session is ${target.status}. Send when it is idle; permission prompts are never bypassed.`
+    if (!reviewTargetReady(target)) {
+      this.notice = target ? `The open session is ${target.status}. Send when it is idle or working; permission prompts are never bypassed.`
         : "Focus the agent chat in this tab first. Reviews are never routed to another tab automatically.";
       cx.notify(); return;
     }
@@ -905,7 +905,7 @@ export default class Annotator extends View {
           else this.threadQueue.set(thread.id, { id: thread.id, fingerprint: thread.fingerprint });
           cx.notify();
         }, enabled, "secondary"))
-        .child(this.button(`fix-${thread.id}`, "Fix thread", cx => this.sendToSession(cx, thread), enabled && !this.editor.value().trim() && this.currentSession()?.status === "idle", "primary")))
+        .child(this.button(`fix-${thread.id}`, "Fix thread", cx => this.sendToSession(cx, thread), enabled && !this.editor.value().trim() && reviewTargetReady(this.currentSession()), "primary")))
       .when(Boolean(draft), el => el.child(v_flex().gap(7)
         .child(div().text_size(11).text_color(t.muted).child("Posts as your signed-in GitHub account. Does not send to the agent."))
         .child(div().p(8).rounded(6).bg(t.background).border_1().border_color(t.border)
@@ -1089,6 +1089,7 @@ export default class Annotator extends View {
     const summary = reviewSummary(comments);
     const hasDraft = this.hasDraft();
     const reviewDrafts = this.hasReviewDrafts();
+    const sendBlocked = deliveryBlocker(target, reviewDrafts, this.reviewNote.uncertain);
     const source = file ? pathParts(file.path) : null;
     const stats = file ? fileStats(file) : null;
     const chat = target?.program?.name ?? (target?.app === "opencode" ? "OpenCode" : target?.app) ?? "Agent";
@@ -1198,7 +1199,7 @@ export default class Annotator extends View {
             .child(div().text_size(10.5).text_color(t.dim).child(`${pending.length} comments · ${this.threadQueue.size} GitHub threads ready`)))
           .when(Boolean(target), el => el.child(this.badge(target.status === "idle" ? "Ready" : target.status === "blocked" ? "Needs you" : "Working", target.status === "idle" ? t.ansi2 : t.ansi3)))
           .child(this.button("export-review", "Export…", cx => this.act("export", { threads: [...this.threadQueue.values()] }, cx), batchSize > 0)))
-        .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && target?.status === "idle" && !reviewDrafts && !this.reviewNote.uncertain, "primary").w_full().h(33).tooltip("Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished"))
-        .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : batchSize && !reviewDrafts && target?.status === "idle" ? "One click submits comments, selected GitHub threads, and your general note to this session." : sendHint(allComments, target, reviewDrafts))));
+        .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && reviewTargetReady(target) && !reviewDrafts && !this.reviewNote.uncertain, "primary").w_full().h(33).tooltip(sendBlocked ?? "Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished"))
+        .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : batchSize && !reviewDrafts && reviewTargetReady(target) ? "One click submits comments, selected GitHub threads, and your general note to this session." : sendHint(allComments, target, reviewDrafts))));
   }
 }

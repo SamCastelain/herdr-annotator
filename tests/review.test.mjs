@@ -121,7 +121,7 @@ test("presentation separates ready, outdated, sent and resolved comments", () =>
   assert.equal(commentStatus(resolved).label, "Resolved");
   assert.equal(commentStatus({ ...ready, delivery: "uncertain" }).label, "Check delivery");
   assert.match(sendHint([outdated], { status: "idle" }, false), /outdated.*excluded/);
-  assert.match(sendHint([ready], { status: "working" }, false), /current turn finishes/);
+  assert.match(sendHint([ready], { status: "working" }, false), /Send review while the source is working/);
   assert.match(sendHint([ready], { status: "blocked" }, false), /Answer its prompt/);
   assert.match(sendHint([ready], { status: "idle" }, true), /Save your draft/);
 });

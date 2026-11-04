@@ -227,7 +227,7 @@ impl Engine {
                     &threads,
                     &note,
                 )?;
-                git::validate_target(&snapshot.scope, &target)?;
+                let send_status = git::validate_review_target(&snapshot.scope, &target)?;
                 // Persist the intent first. A lost reply must never lead to an automatic duplicate send.
                 let ids: Vec<String> = review
                     .comments(&store.comments)
@@ -249,7 +249,7 @@ impl Engine {
                 if let Some(cache) = &mut cache {
                     cache.mark(&threads, Delivery::Uncertain)?;
                 }
-                git::send(&target, &text).map_err(|e| format!("Delivery not confirmed: {e}. Notes retained as uncertain; inspect the agent before reopening/resending."))?;
+                git::send_review(&target, &text, send_status).map_err(|e| format!("Delivery not confirmed: {e}. Notes retained as uncertain; inspect the agent before reopening/resending."))?;
                 for c in &mut store.comments {
                     if ids.contains(&c.id) {
                         c.delivery = Some(Delivery::Sent);

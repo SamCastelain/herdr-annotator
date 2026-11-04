@@ -92,15 +92,17 @@ that source binding or enable the full presentation.
    keep their own keyboard behavior. Normal delivery guards still apply.
 7. The panel binds automatically to the **open agent session in the current tab**.
     Click **Send review** once. It immediately submits the saved batch using
-   `hc send --if idle`, including Enter; there is no second confirmation.
+   `hc send --if idle` or `hc send --if working`, including Enter; there is no
+   second confirmation. A working agent may queue or act on the message;
+   Annotator does not promise which behavior the agent implements.
    Never submits automatically or uses `--force`. No real agent receives test
    text during development checks.
 
 The footer identifies the bound session and its status. Focusing the composer
 keeps the last focused chat from that tab. With multiple chats, focus the intended
 one first; another tab is never chosen automatically. Each click resolves the
-current chat again. Working/blocked sessions stay bound, but sending becomes
-available only when they are idle.
+current chat again. Idle and working sessions can receive reviews. Blocked,
+unknown, and unreported sessions cannot receive them.
 
 An ordinary folder outside Git shows a neutral **Not a Git checkout** state,
 not an error. With no folder selected, the panel asks you to select a checkout.
@@ -116,8 +118,9 @@ snapshot succeeds. Retry preserves drafts and requires line reselection if the
 code changed while disconnected. Known-offline machines skip automatic Git
 requests; an explicit Retry still probes the connection.
 
-The helper rechecks the target's machine, live/reported/idle status and actual
-Git checkout before sending. The core enforces idle status again at submission.
+The helper rechecks the target's machine, live/reported status and actual Git
+checkout before sending. The core enforces the observed idle/working status
+again at submission. A race to a different status fails without a forced retry.
 There is no atomic core operation combining checkout verification with send;
 avoid changing the target's folder/process during delivery.
 
@@ -324,7 +327,7 @@ See [publishing a release](releases.md) for the maintainer checklist.
 ## Commands and open-file API
 
 These commands target a loaded Annotator view. They obey the same draft,
-snapshot, recipient, and idle-agent checks as the buttons:
+snapshot, recipient, and delivery checks as the buttons:
 
 | Command | Action |
 | --- | --- |
@@ -376,7 +379,7 @@ origin/upstream repository on github.com. It uses local `gh` credentials,
 polls every five minutes, and **Refresh** forces a new fetch. Remote checkouts
 still use the app machine's `gh`; no helper installation there is needed.
 
-**Fix thread** sends only that thread to the open idle agent session.
+**Fix thread** sends only that thread to the open idle or working agent session.
 **Add to review** queues it alongside local comments for one-click batch
 delivery or export. Threads include reviewer replies and stored diff context.
 New replies require reselection; resolved, incomplete, sent or uncertain thread

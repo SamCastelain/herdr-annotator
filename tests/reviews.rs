@@ -800,6 +800,8 @@ if args[0]=='exec':
 if args[0]=='get':
     print(json.dumps({'state':'live','status':{'state':os.environ.get('FAKE_STATUS','idle'),'app':'opencode'},'foreground':{'cwd':os.environ['FAKE_CWD']}})); sys.exit(0)
 if args[0]=='send':
+    actual=os.environ.get('FAKE_SEND_STATUS',os.environ.get('FAKE_STATUS','idle'))
+    if args[args.index('--if')+1]!=actual: print('status changed; nothing typed',file=sys.stderr); sys.exit(3)
     if os.environ.get('FAKE_FAIL_SEND')=='1': print('disconnected',file=sys.stderr); sys.exit(2)
     print(json.dumps({'turn':1,'started':True})); sys.exit(0)
 sys.exit(2)
@@ -811,7 +813,16 @@ sys.exit(2)
             log,
         }
     }
-    fn request(&self, mut value: Value, status: &str, fail_send: bool) -> Value {
+    fn request(&self, value: Value, status: &str, fail_send: bool) -> Value {
+        self.request_with_send_status(value, status, status, fail_send)
+    }
+    fn request_with_send_status(
+        &self,
+        mut value: Value,
+        status: &str,
+        send_status: &str,
+        fail_send: bool,
+    ) -> Value {
         value["scope"] = json!({"repo":self.fixture.repo, "machine":"testserver"});
         let out = Command::new(env!("CARGO_BIN_EXE_herdr-annotator"))
             .args(["request", &value.to_string()])
@@ -820,6 +831,7 @@ sys.exit(2)
             .env("FAKE_CWD", &self.fixture.repo)
             .env("FAKE_LOG", &self.log)
             .env("FAKE_STATUS", status)
+            .env("FAKE_SEND_STATUS", send_status)
             .env("FAKE_FAIL_SEND", if fail_send { "1" } else { "0" })
             .output()
             .unwrap();
@@ -860,6 +872,53 @@ fn remote_reads_and_confirmed_send_use_only_core_with_idle_guard() {
 
 #[cfg(unix)]
 #[test]
+fn working_agents_receive_reviews_with_an_exact_working_guard_and_no_force() {
+    let core = FakeCore::new();
+    let s = core.added();
+    let sent = core.request(
+        json!({"op":"send","target":"testserver/t1","revision":s["data"]["snapshot"]["revision"]}),
+        "working",
+        false,
+    );
+    assert_eq!(sent["ok"], true, "{sent}");
+    assert_eq!(sent["data"]["comments"][0]["delivery"], "sent");
+    let calls = fs::read_to_string(&core.log).unwrap();
+    let sends: Vec<Value> = calls
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|call: &Value| call[0] == "send")
+        .collect();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0][1], "--if");
+    assert_eq!(sends[0][2], "working");
+    assert!(!calls.contains("--force"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_working_agent_becoming_blocked_is_refused_without_retry_or_force() {
+    let core = FakeCore::new();
+    let s = core.added();
+    let request =
+        json!({"op":"send","target":"testserver/t1","revision":s["data"]["snapshot"]["revision"]});
+    let refused = core.request_with_send_status(request.clone(), "working", "blocked", false);
+    assert_eq!(refused["ok"], false);
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("Delivery not confirmed")
+    );
+    let loaded = core.request(json!({"op":"snapshot"}), "idle", false);
+    assert_eq!(loaded["data"]["comments"][0]["delivery"], "uncertain");
+    let retry = core.request(request, "working", false);
+    assert_eq!(retry["ok"], false);
+    assert_eq!(core.sends(), 1);
+    assert!(!fs::read_to_string(&core.log).unwrap().contains("--force"));
+}
+
+#[cfg(unix)]
+#[test]
 fn failed_send_is_uncertain_and_never_automatically_retried() {
     let core = FakeCore::new();
     let s = core.added();
@@ -880,10 +939,10 @@ fn failed_send_is_uncertain_and_never_automatically_retried() {
 
 #[cfg(unix)]
 #[test]
-fn busy_or_blocked_agents_never_receive_review_text() {
+fn blocked_and_unknown_agents_never_receive_review_text() {
     let core = FakeCore::new();
     let s = core.added();
-    for status in ["working", "blocked", "error"] {
+    for status in ["blocked", "error", "unknown"] {
         let rejected = core.request(json!({"op":"send", "target":"testserver/t1", "revision":s["data"]["snapshot"]["revision"]}), status, false);
         assert_eq!(rejected["ok"], false);
     }

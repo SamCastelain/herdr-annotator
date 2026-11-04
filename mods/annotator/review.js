@@ -136,10 +136,24 @@ export function sendHint(comments, target, hasDraft) {
     return "Save comments above, then send them together.";
   }
   if (!target) return "Focus the agent chat you want to review in this tab.";
+  if (target.status === "working") return "Send review while the source is working; the agent may queue or act on the message.";
   if (target.status !== "idle") return target.status === "blocked"
     ? "The chat needs your attention. Answer its prompt before sending."
     : "The chat is busy. Send when its current turn finishes.";
   return "Sends saved comments to this chat and submits with Enter.";
+}
+
+export function reviewTargetReady(target) {
+  return target?.status === "idle" || target?.status === "working";
+}
+
+export function deliveryBlocker(target, hasDraft, uncertain = false) {
+  if (hasDraft) return "Save or cancel unfinished comments in this comparison before sending.";
+  if (uncertain) return "Delivery is unconfirmed. Check the source chat before allowing another send.";
+  if (!target) return "Source chat unavailable. Return to the source tab and focus its agent.";
+  if (target.status === "blocked") return "Source session needs your attention. Answer its prompt before sending the review.";
+  if (!reviewTargetReady(target)) return "Source session is not ready. Check its status, or export this review.";
+  return null;
 }
 
 // Pair contiguous removed/added runs without crossing a hunk or context line.

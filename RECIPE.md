@@ -85,7 +85,10 @@ Bind to the current tab's focused agent session automatically. Keep that binding
 when the composer takes focus; never guess between multiple chats or across tabs.
 Each Send click resolves the current chat again and submits with Enter immediately,
 without an extra confirmation. Disable repeat clicks while delivery is running.
-Working/blocked/unreported terminals cannot receive feedback. Persist uncertain
+Idle and working agents can receive review feedback. Validate the observed
+status, then submit through `hc send --if idle` or `hc send --if working` so
+core checks it atomically. Never use --force or retry a status race automatically.
+Blocked/unreported terminals cannot receive feedback. Persist uncertain
 delivery before the core call so a crash/reply loss never silently resends.
 Requeue requires another explicit decision. Tests never send to a real agent.
 After confirmed delivery, focus the exact recipient pane. Never focus another

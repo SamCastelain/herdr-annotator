@@ -641,14 +641,14 @@ test("one-click send still refuses unsaved drafts and empty batches", async () =
   assert.equal(h.requests.filter(r => r.op === "send").length, 0);
 });
 
-test("composer focus retains the chat; a working session never receives feedback", async () => {
+test("composer focus retains the exact chat when sending to a working session", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain(); h.mod.render(h.cx);
   h.state.focus = { terminal: null, pane: null };
   assert.equal(h.mod.currentSession().address, "t7");
   h.state.agents[0].status = "working";
   h.mod.sendToSession(h.cx); await h.drain();
-  assert.equal(h.requests.filter(r => r.op === "send").length, 0);
-  assert.match(h.mod.notice, /working/);
+  assert.equal(h.requests.filter(r => r.op === "send").length, 1);
+  assert.equal(h.requests.at(-1).target, "t7");
 });
 
 test("Comments tab exposes every saved note without sending or mutating", async () => {
@@ -1370,7 +1370,7 @@ test("Cmd/Ctrl Enter sends outside an empty composer and includes general notes"
 });
 
 test("review shortcut respects unfinished editors, hidden drafts and delivery guards", async () => {
-  for (const blocked of ["unfocused-comment", "hidden-comment", "edit", "question", "reply", "base", "busy-agent", "missing-agent", "offline", "uncertain", "held", "shift", "alt", "plain"]) {
+  for (const blocked of ["unfocused-comment", "hidden-comment", "edit", "question", "reply", "base", "blocked-agent", "missing-agent", "offline", "uncertain", "held", "shift", "alt", "plain"]) {
     const h = harness(); h.mod.init({}, h.cx); await h.drain();
     const chord = { key: "enter", keystroke: "cmd-enter", modifiers: { platform: true } };
     if (blocked === "unfocused-comment") h.mod.editor.set_value("Unfinished comment");
@@ -1379,7 +1379,7 @@ test("review shortcut respects unfinished editors, hidden drafts and delivery gu
     if (blocked === "question") h.mod.beginQuestion({ kind: "file" }, h.cx);
     if (blocked === "reply") h.mod.githubDrafts.set(JSON.stringify([h.mod.context, "thread"]), { editor: { value: () => "Pending reply" } });
     if (blocked === "base") h.mod.baseOpen = true;
-    if (blocked === "busy-agent") h.state.agents[0].status = "working";
+    if (blocked === "blocked-agent") h.state.agents[0].status = "blocked";
     if (blocked === "missing-agent") h.state.agents = [];
     if (blocked === "offline") h.mod.snapshotFailed("Connection timed out", h.state.scope);
     if (blocked === "uncertain") h.mod.reviewNote.uncertain = true;
@@ -1429,3 +1429,25 @@ test("saving does not steal keyboard focus after switching to a different pane",
   assert.notEqual(h.state.reviewFocused, true);
 });
 
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} allows review delivery to a working source`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  h.state.agents[0].status = "working";
+  h.mod.render(h.cx);
+  const text = h.nodes.flatMap(node => node.children).filter(child => typeof child === "string");
+  assert.equal(text.some(value => value.includes("Source session is still working")), false);
+  assert.equal(typeof h.nodes.find(node => node.id === (full ? "full-send" : "send-review")).events.on_click, "function");
+  h.mod.sendToSession(h.cx); await h.drain();
+  assert.equal(h.requests.some(request => request.op === "send"), true);
+  assert.equal(h.mod.data.comments[0].body, "Inline note");
+});
+
+test("keyboard review delivery accepts working but not blocked or unreported sources", async () => {
+  for (const status of ["working", "blocked", null]) {
+    const h = harness(); h.mod.init({}, h.cx); await h.drain();
+    h.state.agents[0].status = status;
+    h.mod.handleKey({ key: "enter", keystroke: "cmd-enter", modifiers: { platform: true } }, h.cx);
+    await h.drain();
+    assert.equal(h.requests.some(request => request.op === "send"), status === "working", String(status));
+  }
+});

@@ -1,7 +1,7 @@
 import { div, list } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, v_virtual_list, Scrollbar, Textarea } from "gpui-base";
 import { theme, settings, setShared } from "herdr";
-import { splitRows, splitSelectionRow, selected, pendingComments, unreadItems, visibleComments, fileStats, diffReaderEntries, commentStatus, commentLocation } from "./review.js";
+import { splitRows, splitSelectionRow, selected, pendingComments, unreadItems, visibleComments, fileStats, diffReaderEntries, commentStatus, commentLocation, deliveryBlocker, reviewTargetReady } from "./review.js";
 
 function pageCards(self, id, items, render) {
   self.cardPages ??= new Map();
@@ -78,6 +78,7 @@ export function renderFull(self, cx) {
   const reviewDrafts = self.hasReviewDrafts();
   const pending = pendingComments(allComments), batch = pending.length + self.threadQueue.size + (self.reviewNote.editor.value().trim() ? 1 : 0);
   const target = self.currentSession(), unread = comments.filter(c => !c.read).length + threads.filter(c => !c.read).length;
+  const sendBlocked = deliveryBlocker(target, reviewDrafts, self.reviewNote.uncertain);
   const listId = `full-diff-${file?.path ?? "empty"}-${self.diffStyle}`;
   const diff = v_flex().id("full-diff-frame").relative().flex_1().min_h(0)
     .on_mouse_down("left", event => { self.diffPress = { event, path: file?.path, revision: snapshot?.revision }; self.diffRelease = null; })
@@ -256,5 +257,5 @@ export function renderFull(self, cx) {
         .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${target.address} · ${target.status}` : "Source chat unavailable · sending disabled"))
         .child(div().text_size(11).text_color(t.dim).child(self.snapshotError ? `${snapshot ? "Cached review · " : ""}Refresh must succeed before saving or sending.` : reviewDrafts ? "Save or cancel unfinished comments in this comparison before sending." : `${pending.length} local comments · ${self.threadQueue.size} GitHub threads ready`)))
       .child(self.button("full-export", "Export…", cx => self.act("export", { threads: [...self.threadQueue.values()] }, cx), batch > 0))
-      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && target?.status === "idle" && !reviewDrafts && !self.reviewNote.uncertain, "primary").tooltip("Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished")));
+      .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && reviewTargetReady(target) && !reviewDrafts && !self.reviewNote.uncertain, "primary").tooltip(sendBlocked ?? "Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished")));
 }
