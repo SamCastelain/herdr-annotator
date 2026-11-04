@@ -42,8 +42,9 @@ background. Ready-to-send note cards use accent borders and badges; outdated
 cards use amber with an explicit exclusion explanation; sent/resolved notes have
 their own status. Comments lists every file's feedback, including outdated and
 no-longer-changed files. Saving and sending are separate buttons with distinct
-placement. Disabled Send explains whether a draft, missing chat, busy agent or
-outdated comments block it. No terminal UI or popup picker.
+placement. Disabled Send explains blockers in its tooltip; avoid repeated static
+composer/footer help. Copy buttons briefly show ✓ Copied with an opacity transition.
+No terminal UI or popup picker.
 
 ## How it behaves
 

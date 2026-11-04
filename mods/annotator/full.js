@@ -185,8 +185,7 @@ export function renderFull(self, cx) {
         .child(self.button("full-file-note", "Whole file", cx => self.fileNote(cx), Boolean(file)))
         .child(self.button("full-cancel", "Cancel", cx => self.cancelDraft(cx))))
       .child(Textarea.new(self.editor).h(70).w_full().text_size(13))
-      .child(h_flex().justify_between().items_center()
-        .child(div().text_size(11).text_color(t.dim).child("⌘Enter / Ctrl+Enter saves this comment · sends review when no comments are unfinished"))
+      .child(h_flex().justify_end().items_center()
         .child(self.button("full-save", "+ Save comment", cx => self.saveComment(cx), self.canSaveComment(), "primary")))));
 
   const inspector = () => v_flex().size_full().min_h(0).bg(t.chrome).border_l(1).border_color(t.border)
@@ -233,10 +232,9 @@ export function renderFull(self, cx) {
        .child(self.button("full-unread", self.onlyUnread ? "● Unread only" : `All comments · ${unread} unread`, cx => { self.onlyUnread = !self.onlyUnread; self.rememberFull({ onlyUnread: self.onlyUnread }); cx.notify(); }, true, "secondary"))
        .when(self.resolvedCount() > 0 || self.showResolved, el => el.child(self.resolvedFilter("full-resolved")))
       .child(div().flex_1())
-      .child(self.button("full-toggle-comments", self.commentsOpen ? "Hide comments pane" : "Comments pane", cx => {
+       .child(self.button("full-toggle-comments", self.commentsOpen ? "Hide comments pane" : "Comments pane", cx => {
         self.commentsOpen = !self.commentsOpen; self.rememberFull({ commentsOpen: self.commentsOpen }); setShared("annotator.fullComments", self.commentsOpen); cx.notify();
-      }, true, self.commentsOpen ? "secondary" : "quiet"))
-       .child(div().text_size(11).text_color(t.dim).child("Read markers are local · replies post only on request")))
+       }, true, self.commentsOpen ? "secondary" : "quiet")))
     .child(h_resizable(self.commentsOpen ? "annotator-reader-with-comments" : "annotator-reader").flex_1().min_h(0)
       .on_resize((sizes, cx) => { self.fullWidths = sizes.slice(0, 2); self.commentWidth = sizes[2] ?? self.commentWidth; setShared("annotator.fullWidths", sizes); cx.notify(); })
       .child(resizable_panel().size(self.fullWidths[0]).size_range(160, 500).visible(self.filesOpen)
@@ -255,7 +253,8 @@ export function renderFull(self, cx) {
     .child(h_flex().h(60).flex_none().px(16).gap(12).items_center().bg(t.chrome).border_t(1).border_color(t.border)
       .child(v_flex().flex_1().min_w(0).gap(3)
         .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${target.address} · ${target.status}` : "Source chat unavailable · sending disabled"))
-        .child(div().text_size(11).text_color(t.dim).child(self.snapshotError ? `${snapshot ? "Cached review · " : ""}Refresh must succeed before saving or sending.` : reviewDrafts ? "Save or cancel unfinished comments in this comparison before sending." : `${pending.length} local comments · ${self.threadQueue.size} GitHub threads ready`)))
+        .when(Boolean(self.snapshotError || self.reviewNote.uncertain || (target && !reviewTargetReady(target))), el => el
+          .child(div().text_size(11).text_color(t.ansi3).child(self.snapshotError ? "Refresh failed. Review actions paused." : deliveryBlocker(target, false, self.reviewNote.uncertain)))))
       .child(self.button("full-export", "Export…", cx => self.act("export", { threads: [...self.threadQueue.values()] }, cx), batch > 0))
       .child(self.button("full-send", `Send review · ${batch}`, cx => self.sendToSession(cx), batch > 0 && reviewTargetReady(target) && !reviewDrafts && !self.reviewNote.uncertain, "primary").tooltip(sendBlocked ?? "Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished")));
 }

@@ -20,6 +20,8 @@ function harness() {
       return (...args) => {
         if (key === "id") data.id = args[0];
         else if (key === "selectable") data.selectable = args[0];
+        else if (key === "opacity") data.opacity = args[0];
+        else if (key === "transition") data.transition = args;
         else if (key === "child") data.children.push(args[0]);
         else if (key === "children") data.children.push(...args[0]);
         else if (key === "when" && args[0]) args[1](proxy);
@@ -45,7 +47,13 @@ function harness() {
       files: [{ path: "a.rs", status: " M", rows: [{ kind: "add", old: null, new: 2, text: "changed" }], loaded: true, truncated: false }], limited: false },
     comments: [{ id: "note1", path: "a.rs", body: "Inline note", stale: false, resolved: false, delivery: null, position: { side: "new", start: 2, end: 2 } }],
   });
-  const cx = { notify() {}, stop_propagation() {}, write_to_clipboard: text => { state.clipboard = text; }, focus_handle: () => ({ focus() { state.focusedInput?.emit("blur", {}); state.focusedInput = null; state.reviewFocused = true; }, is_focused: () => Boolean(state.reviewFocused) }), timer: { every() {} }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
+  const cx = { notify() {}, stop_propagation() {}, write_to_clipboard: text => { state.clipboard = text; }, focus_handle: () => ({
+    focus() { state.focusedInput?.emit("blur", {}); state.focusedInput = null; state.reviewFocused = true; },
+    is_focused: () => Boolean(state.reviewFocused),
+  }), timer: { every() {}, after(_ms, fn) {
+    const timer = { cancelled: false, fire: () => { if (!timer.cancelled) fn(cx); }, cancel() { timer.cancelled = true; } };
+    (state.timers ??= []).push(timer); return timer;
+  } }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
   const storage = new Map();
   const context = {
     ...review, ...syntax, DraftLifecycle, GithubRefresh, UpdateController,
@@ -111,6 +119,34 @@ test("saving sends the reviewed source anchor and keeps text on stale-code refus
   assert.deepEqual(request.reviewed, { branch: "main", head: "head1", baseline: null,
     anchor: { lines: { selection: { side: "new", start: 2, end: 2 }, selected: ["changed"], before: [], after: [] } } });
   assert.equal(h.mod.editor.value(), "Keep my draft");
+});
+
+test("copy confirmation animates on the clicked button, resets, and cancels old timers", async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const button = id => h.mod.button(id, "Copy error", cx => h.mod.copyText("error detail", cx));
+  button("copy-error"); h.nodes.at(-1).events.on_click({}, h.cx);
+  assert.equal(h.state.clipboard, "error detail");
+  button("copy-error");
+  assert.ok(h.nodes.at(-1).children.includes("✓ Copied"));
+  assert.equal(h.nodes.at(-1).opacity, 0.72);
+  assert.deepEqual(Array.from(h.nodes.at(-1).transition), ["opacity", 140]);
+  const first = h.state.timers.at(-1);
+  button("copy-path"); h.nodes.at(-1).events.on_click({}, h.cx);
+  assert.equal(first.cancelled, true); first.fire();
+  assert.equal(h.mod.copiedId, "copy-path");
+  h.state.timers.at(-1).fire();
+  assert.equal(h.mod.copiedId, null);
+  button("copy-error");
+  assert.ok(h.nodes.at(-1).children.includes("Copy error"));
+  h.nodes.at(-1).events.on_click({}, h.cx); h.mod.close();
+  assert.equal(h.state.timers.at(-1).cancelled, true);
+});
+
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} omits repeated composer and footer instructions`, async () => {
+  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  h.mod.full = full; h.mod.editor.set_value("Draft"); h.mod.render(h.cx);
+  const text = h.nodes.flatMap(node => node.children).filter(child => typeof child === "string").join("\n");
+  assert.doesNotMatch(text, /General note · sent after|saves this comment|saves · not sent|Saved comments join|Save your draft|Read markers are local|One click submits/);
 });
 
 test("switching worktrees supersedes a pending snapshot without waiting for the old remote", async () => {

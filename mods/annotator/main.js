@@ -91,7 +91,13 @@ export default class Annotator extends View {
   }
 
   copyText(text, cx) {
-    try { cx.write_to_clipboard(text); this.notice = "Copied to clipboard."; }
+    try {
+      cx.write_to_clipboard(text);
+      this.copyTimer?.cancel(); this.copiedId = this.copySource ?? null;
+      if (this.copiedId) this.copyTimer = cx.timer.after(1100, cx => {
+        this.copiedId = null; if (!this.closed) cx.notify();
+      });
+    }
     catch (error) { this.notice = `Copy failed: ${error}`; }
     cx.notify();
   }
@@ -121,7 +127,7 @@ export default class Annotator extends View {
     this.updates.publish(blocked);
   }
 
-  close() { this.closed = true; this.updates?.close(Boolean(this._busy || this.ordering)); }
+  close() { this.closed = true; this.copyTimer?.cancel(); this.updates?.close(Boolean(this._busy || this.ordering)); }
 
   orderEntry(snapshot = this.data?.snapshot) {
     return (shared("annotator.fileOrders") ?? []).find(entry => entry.key === reviewOrderKey(snapshot));
@@ -433,8 +439,8 @@ export default class Annotator extends View {
       .when(draft.status === "uncertain", el => el.child(div().text_size(11).text_color(theme().ansi3).child("Delivery is uncertain. Check the chat before retrying. Do not change the question or recipient.")))
       .child(h_flex().gap(5)
         .child(this.button("question-cancel", "Close", cx => { this.questions.delete(this.navigationKey()); cx.notify(); }))
-        .child(this.button("question-send", "Send question", cx => this.sendQuestion(cx), Boolean(draft.editor.value().trim()) && reviewTargetReady(target) && draft.status !== "uncertain", "primary"))
-        .when(draft.status === "uncertain", el => el.child(this.button("question-retry", "I checked chat · Send again", cx => this.sendQuestion(cx, true), reviewTargetReady(target)))));
+        .child(this.button("question-send", "Send question", cx => this.sendQuestion(cx), Boolean(draft.editor.value().trim()) && target?.status === "idle" && draft.status !== "uncertain", "primary"))
+        .when(draft.status === "uncertain", el => el.child(this.button("question-retry", "I checked chat · Send again", cx => this.sendQuestion(cx, true), target?.status === "idle"))));
   }
 
   handleCommand(command, cx) {
@@ -746,7 +752,6 @@ export default class Annotator extends View {
     if (!this.reviewNotes.has(this.context)) return div().h(0);
     const note = this.reviewNote;
     return v_flex().gap(4)
-      .child(div().text_size(11).text_color(theme().muted).child("General note · sent after review comments"))
       .child(Textarea.new(note.editor).id("review-general-note").h(54).w_full())
       .when(note.uncertain, el => el
         .child(div().text_size(11).text_color(theme().ansi3).child("Delivery unconfirmed. Check the chat before sending this note again."))
@@ -920,14 +925,19 @@ export default class Annotator extends View {
 
   button(id, text, action, enabled = true, variant = "quiet") {
     const t = theme();
+    const copied = this.copiedId === id;
     const active = enabled && (!this.busy || id.startsWith("copy-")) && !(this.snapshotError && needsFreshSnapshot(id));
     return h_flex().id(id).h(29).px(10).rounded(6).text_size(12).items_center().justify_center().flex_none()
-      .text_color(active ? t.foreground : t.dim)
+      .text_color(copied ? t.ansi2 : active ? t.foreground : t.dim)
+      .opacity(copied ? 0.72 : 1).transition("opacity", 140)
       .when(variant === "primary", el => el.bg(active ? t.accent : t.raised)
         .text_color(active ? t.accent_foreground : t.dim).font_semibold())
       .when(variant === "secondary", el => el.bg(t.surface).border_1().border_color(t.border))
       .when(active, el => el.cursor_pointer().hover(s => variant === "primary" ? s.opacity(0.85) : s.bg(t.hover))
-        .on_click((_e, cx) => { this.focusReview(); action(cx); this.publishUpdateState(); })).child(text);
+        .on_click((_e, cx) => {
+          this.focusReview(); this.copySource = id.startsWith("copy-") ? id : null;
+          try { action(cx); } finally { this.copySource = null; this.publishUpdateState(); }
+        })).child(copied ? "✓ Copied" : text);
   }
 
   badge(text, color, background = null) {
@@ -1181,7 +1191,7 @@ export default class Annotator extends View {
         .child(div().rounded(5).bg(t.background).border_1().border_color(t.border).p(6)
           .child(Textarea.new(this.editor).h(65).w_full().text_size(13)))
         .child(h_flex().gap(5).items_center()
-          .child(div().flex_1().text_size(10.5).text_color(t.dim).child(hasDraft ? "⌘/Ctrl+Enter saves · not sent" : "Saved comments join your review"))
+          .child(div().flex_1())
           .when(hasDraft || Boolean(selection), el => el.child(this.button("cancel-note", "Cancel", cx => {
             this.cancelDraft(cx);
           })))
@@ -1200,6 +1210,7 @@ export default class Annotator extends View {
           .when(Boolean(target), el => el.child(this.badge(target.status === "idle" ? "Ready" : target.status === "blocked" ? "Needs you" : "Working", target.status === "idle" ? t.ansi2 : t.ansi3)))
           .child(this.button("export-review", "Export…", cx => this.act("export", { threads: [...this.threadQueue.values()] }, cx), batchSize > 0)))
         .child(this.button("send-review", sendLabel, cx => this.sendToSession(cx), batchSize > 0 && reviewTargetReady(target) && !reviewDrafts && !this.reviewNote.uncertain, "primary").w_full().h(33).tooltip(sendBlocked ?? "Send review · ⌘Enter / Ctrl+Enter when no comments are unfinished"))
-        .child(div().text_size(10.5).text_color(t.muted).child(this.snapshotError ? "Refresh must succeed before saving or sending feedback." : batchSize && !reviewDrafts && reviewTargetReady(target) ? "One click submits comments, selected GitHub threads, and your general note to this session." : sendHint(allComments, target, reviewDrafts))));
+        .when(Boolean(this.snapshotError || this.reviewNote.uncertain || (target && !reviewTargetReady(target))), el => el
+          .child(div().text_size(10.5).text_color(t.ansi3).child(this.snapshotError ? "Refresh failed. Review actions paused." : deliveryBlocker(target, false, this.reviewNote.uncertain)))));
   }
 }
