@@ -222,6 +222,7 @@ export function renderFull(self, cx) {
       .child(self.button("full-updates", "Updates", cx => { self.updates.save({ open: !self.updates.state.open }); self.updates.check(cx); cx.notify(); }))
       .child(self.button("full-refresh", self.busy ? "Updating…" : "↻ Refresh", cx => { self.refresh(cx, true); self.refreshGithub(cx, true); })))
     .when(self.baseOpen, el => el.child(self.basePicker()))
+    .when(self.orderModelOpen, el => el.child(self.orderModelPanel()))
     .child(self.updatePanel())
     .when(Boolean(self.error), el => el.child(self.errorCard(t)))
     .when(Boolean(self.notice && !self.error), el => el.child(div().px(16).py(8).text_size(12).text_color(t.muted).child(self.notice)))

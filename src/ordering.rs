@@ -1,5 +1,7 @@
 //! Stateless, tool-free reading-order requests. No source-chat access or store locks.
-use crate::{OrderingRunner, Result, Scope, Snapshot, ViewSpec, git, process};
+use crate::{
+    OrderingModel, OrderingRunner, Result, Scope, Snapshot, ViewSpec, git, ordering_models, process,
+};
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path, process::Command};
 
@@ -68,10 +70,14 @@ fn parse_order(text: &str, snapshot: &Snapshot) -> Result<Vec<String>> {
     Ok(files)
 }
 
-fn generate(prompt: &str, runner: OrderingRunner) -> Result<String> {
+fn generate(prompt: &str, runner: OrderingRunner, model: Option<&OrderingModel>) -> Result<String> {
     let mut command;
     let guidance = match runner {
         OrderingRunner::Opencode => {
+            let mut body = json!({"prompt": prompt});
+            if let Some(model) = model {
+                body["model"] = json!(model);
+            }
             command = Command::new(crate::executables::tool(
                 "opencode",
                 "HERDR_ANNOTATOR_OPENCODE",
@@ -81,11 +87,14 @@ fn generate(prompt: &str, runner: OrderingRunner) -> Result<String> {
                 "post",
                 "/api/experimental/generate/text",
                 "--data",
-                &json!({"prompt": prompt}).to_string(),
+                &body.to_string(),
             ]);
-            "Check OpenCode V2 and its configured default model, then retry."
+            "Check the selected OpenCode ordering model and provider access, or choose another model."
         }
         OrderingRunner::Pi => {
+            if model.is_some() {
+                return Err("Model overrides currently require the OpenCode runner".into());
+            }
             // Local core only, even when reviewing an SSH checkout. Never create
             // a terminal, attach to a source agent, or auto-approve tool calls.
             command = Command::new(crate::executables::tool("hc", "HERDR_ANNOTATOR_HC"));
@@ -125,10 +134,24 @@ pub(crate) fn order(
     revision: &str,
     view: &ViewSpec,
     runner: OrderingRunner,
+    model: Option<OrderingModel>,
+    target: Option<&str>,
 ) -> Result<Value> {
     let (visible, full) = prepared(state_dir, scope, view)?;
     visible.require_revision(revision)?;
-    let text = generate(&prompt(&full)?, runner)?;
+    let model = process::within_budget(|| {
+        if let Some(model) = model {
+            ordering_models::validate(&model)?;
+            return Ok(Some(model));
+        }
+        if matches!(runner, OrderingRunner::Opencode)
+            && let Some(target) = target
+        {
+            return ordering_models::source_model(scope, target).map(Some);
+        }
+        Ok(None)
+    })?;
+    let text = generate(&prompt(&full)?, runner, model.as_ref())?;
     let files = parse_order(&text, &full)?;
     let (latest, latest_full) = prepared(state_dir, scope, view)?;
     latest.require_revision(revision)?;

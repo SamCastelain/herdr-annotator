@@ -3,6 +3,7 @@ mod git;
 mod github;
 mod model;
 mod ordering;
+mod ordering_models;
 mod preparation;
 mod process;
 mod question;
@@ -41,9 +42,22 @@ impl Engine {
             revision,
             view,
             runner,
+            model,
+            target,
         } = request
         {
-            return ordering::order(&self.state_dir, &scope, &revision, &view, runner);
+            return ordering::order(
+                &self.state_dir,
+                &scope,
+                &revision,
+                &view,
+                runner,
+                model,
+                target.as_deref(),
+            );
+        }
+        if let Request::OrderModels { scope, target } = request {
+            return process::within_budget(|| ordering_models::options(&scope, target.as_deref()));
         }
         process::within_budget(|| self.handle_request(request))
     }
@@ -83,7 +97,9 @@ impl Engine {
             preparation::PreparedReview::open(&self.state_dir, request.scope(), &request.view())?;
         let snapshot = &review.visible;
         match request {
-            Request::Order { .. } => unreachable!("Ordering uses its own generation budget"),
+            Request::Order { .. } | Request::OrderModels { .. } => {
+                unreachable!("Ordering uses its own preparation")
+            }
             Request::Snapshot { .. } => (),
             Request::Add {
                 revision,

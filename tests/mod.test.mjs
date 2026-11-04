@@ -1247,6 +1247,8 @@ for (const full of [false, true]) test(`${full ? "full" : "sidebar"} logical ord
   h.mod.orderLogically(h.cx); h.mod.orderLogically(h.cx);
   await h.drain();
   assert.equal(h.requests.filter(r => r.op === "order").length, 1);
+  assert.equal(h.requests.find(r => r.op === "order").target, "t7");
+  assert.equal(h.requests.find(r => r.op === "order").model, null);
   assert.equal(h.requests.some(r => r.op === "send" || r.op === "ask"), false);
   assert.equal(h.mod.orderedFiles().map(f => f.path).join(","), "b.rs,a.rs");
   assert.equal(snapshot.files.map(f => f.path).join(","), "a.rs,b.rs");
@@ -1261,6 +1263,32 @@ for (const full of [false, true]) test(`${full ? "full" : "sidebar"} logical ord
   }
   h.mod.resetOrder(h.cx);
   assert.equal(h.mod.orderedFiles().map(f => f.path).join(","), "a.rs,b.rs");
+});
+
+for (const full of [false, true]) test(`${full ? "full" : "sidebar"} ordering model picker overrides only the one-shot request and can return to source auto`, async () => {
+  const h = harness(); h.state.props = full ? { presentation: "full" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.data.snapshot.files.push({ path: "b.rs", status: "M", rows: [] });
+  const model = { providerID: "fixture", id: "review-model" };
+  h.state.reply = async request => ({ code: 0, stdout: JSON.stringify({ ok: true, data: request.op === "order_models"
+    ? { source: { providerID: "fixture", id: "chat-model", variant: "medium" }, models: [{ name: "Review model", model }] }
+    : { files: ["b.rs", "a.rs"], revision: request.revision } }) });
+  h.mod.render(h.cx);
+  h.nodes.find(node => node.id === (full ? "full-order-logically-model" : "order-logically-model")).events.on_click({}, h.cx);
+  await h.drain(); h.nodes.length = 0; h.mod.render(h.cx);
+  assert.equal(h.requests.at(-1).op, "order_models");
+  assert.equal(h.requests.at(-1).target, "t7");
+  assert.equal(h.requests.some(request => request.op === "order"), false);
+  h.nodes.find(node => node.id === "order-model-choice-0").events.on_click({}, h.cx);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.shared["annotator.orderModel"])), model);
+  assert.equal(h.mod.orderModelOpen, false);
+  h.mod.orderLogically(h.cx); await h.drain();
+  assert.deepEqual(h.requests.at(-1).model, model);
+  h.mod.openOrderModels(h.cx); await h.drain(); h.nodes.length = 0; h.mod.render(h.cx);
+  h.nodes.find(node => node.id === "order-model-auto").events.on_click({}, h.cx);
+  assert.equal(h.state.shared["annotator.orderModel"], null);
+  assert.equal(h.requests.some(request => ["send", "ask"].includes(request.op)), false);
+  assert.equal(h.state.commands.length, 0);
 });
 
 test("late and malformed logical orders never change the displayed files", async () => {

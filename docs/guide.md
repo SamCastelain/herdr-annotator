@@ -19,7 +19,12 @@ GitHub review threads with explicit replies. No commit controls or full-file edi
   and their existing core, not this binary or mod.
 - Node.js 22+ for JavaScript tests; Python 3 for the development installer/tests.
 - Optional: OpenCode V2 or Pi on the app machine, with a configured model/auth,
-  for **Order logically**. Click **AI: OpenCode / Pi** to switch runners. Pi runs
+  for **Order logically**. Click **AI: OpenCode / Pi** to switch runners.
+  OpenCode inherits the local source chat's model and reasoning variant when
+  its title and checkout identify one root session. Click **Source chat ▾** to
+  override the ordering model without changing the chat or global default.
+  Remote, missing, or ambiguous source sessions require an explicit choice.
+  Pi uses its own configured model and runs
   locally through `hc exec`, without tools, saved sessions, extensions, MCP,
   skills, prompt templates, context files, or project-local approval.
   Each ordering click makes one tool-free request with changed paths and bounded

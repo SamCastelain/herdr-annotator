@@ -74,6 +74,93 @@ impl Fixture {
 }
 
 #[test]
+fn explicit_ordering_model_is_sent_without_changing_any_session() {
+    let f = Fixture::new();
+    let revision = f.revision();
+    let model = json!({"providerID":"fixture","id":"review-model","variant":"low"});
+    let out = f.request(
+        json!({"op":"order","revision":revision,"model":model}),
+        &json!({"data":{"text":"[\"b.rs\",\"a.rs\"]"}}).to_string(),
+        false,
+        "0",
+    );
+    assert_eq!(out["ok"], true, "{out}");
+    let log = fs::read_to_string(f.dir.path().join("calls")).unwrap();
+    let body: Value = serde_json::from_str(log.lines().nth(4).unwrap()).unwrap();
+    assert_eq!(body["model"], model);
+}
+
+#[test]
+fn source_model_inference_uses_the_unique_root_session_and_keeps_variant() {
+    let f = Fixture::new();
+    let revision = f.revision();
+    let sessions = json!({"cursor":{"next":"next-page"},"data":[
+        {"id":"ses_other","title":"Other chat","location":{"directory":f.repo},"model":{"providerID":"fixture","id":"wrong"}},
+        {"id":"ses_child","parentID":"ses_main","title":"Source chat","location":{"directory":f.repo},"model":{"providerID":"fixture","id":"wrong"}},
+        {"id":"ses_main","title":"Source chat","location":{"directory":f.repo},"model":{"providerID":"fixture","id":"source-model","variant":"medium"}}
+    ]});
+    let terminal = json!({"state":"live","title":"OC | Source chat","status":{"state":"working","app":"opencode"},"foreground":{"cwd":f.repo}});
+    fs::write(f.dir.path().join("sessions"), sessions.to_string()).unwrap();
+    fs::write(f.dir.path().join("terminal"), terminal.to_string()).unwrap();
+    fs::write(&f.runner, format!(r#"#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+root=Path({root:?})
+args=sys.argv[1:]
+if args[0]=='get': print((root/'terminal').read_text())
+elif args[:2]==['api','get']:
+    if args[2]=='/api/model':
+        print(json.dumps({{'data':[{{'id':'source-model','providerID':'fixture','name':'Source model','type':'chat','enabled':True,'settings':{{'apiKey':'must-not-leak'}}}},{{'id':'image','providerID':'fixture','type':'image','enabled':True}}]}}))
+    else: print(json.dumps({{'data':[]}}) if '&cursor=' in args[2] else (root/'sessions').read_text())
+else:
+    (root/'generation').write_text(json.dumps(args))
+    print(Path(os.environ['ORDER_RESPONSE']).read_text())
+"#, root=f.dir.path().to_str().unwrap())).unwrap();
+    let out = f.request(
+        json!({"op":"order","revision":revision,"target":"t7"}),
+        &json!({"data":{"text":"[\"b.rs\",\"a.rs\"]"}}).to_string(),
+        false,
+        "0",
+    );
+    assert_eq!(out["ok"], true, "{out}");
+    let args: Vec<String> =
+        serde_json::from_slice(&fs::read(f.dir.path().join("generation")).unwrap()).unwrap();
+    let body: Value = serde_json::from_str(&args[4]).unwrap();
+    assert_eq!(
+        body["model"],
+        json!({"providerID":"fixture","id":"source-model","variant":"medium"})
+    );
+    let options = f.request(json!({"op":"order_models","target":"t7"}), "", false, "0");
+    assert_eq!(options["ok"], true, "{options}");
+    assert_eq!(options["data"]["source"], body["model"]);
+    assert_eq!(options["data"]["models"].as_array().unwrap().len(), 1);
+    assert!(!options.to_string().contains("must-not-leak"));
+    let mut blocked = terminal.clone();
+    blocked["status"]["state"] = json!("blocked");
+    fs::write(f.dir.path().join("terminal"), blocked.to_string()).unwrap();
+    let options = f.request(json!({"op":"order_models","target":"t7"}), "", false, "0");
+    assert_eq!(
+        options["data"]["source"], body["model"],
+        "Discovery is read-only, even during a permission prompt"
+    );
+    let mut ambiguous = sessions.clone();
+    ambiguous["data"]
+        .as_array_mut()
+        .unwrap()
+        .push(sessions["data"][2].clone());
+    fs::write(f.dir.path().join("sessions"), ambiguous.to_string()).unwrap();
+    fs::remove_file(f.dir.path().join("generation")).unwrap();
+    let out = f.request(
+        json!({"op":"order","revision":revision,"target":"t7"}),
+        "",
+        false,
+        "0",
+    );
+    assert_eq!(out["ok"], false, "{out}");
+    assert!(!f.dir.path().join("generation").exists());
+}
+
+#[test]
 fn ordering_finds_installed_opencode_with_a_desktop_path() {
     let f = Fixture::new();
     let revision = f.revision();

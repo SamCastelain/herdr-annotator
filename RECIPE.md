@@ -48,6 +48,14 @@ No terminal UI or popup picker.
 
 ## How it behaves
 
+OpenCode logical ordering uses the bound source chat's selected model and
+reasoning variant. Match a local live OpenCode terminal's title and checkout
+against root sessions, checking all bounded result pages; never guess newest.
+Expose an ordering-only model picker with Source chat auto mode. Unresolvable
+or remote source sessions require an explicit override. Discovery is read-only,
+returns no provider secrets, and never sends chat messages. Pi retains its own
+configured model. Never change a session model or the global default.
+
 Default to the active space's terminal checkout, with optional pinned scope props.
 Folders outside Git show a neutral Not a Git checkout state with Refresh, not a
 red error. No selected folder asks for a checkout. Preserve drafts and block stale

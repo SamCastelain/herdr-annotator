@@ -25,6 +25,9 @@ export default class Annotator extends View {
     this.snapshotError = null; this.showErrorDetails = false;
     this.sessions = new Map(); this.exportText = null;
     this.ordering = null;
+    this.orderModelOpen = false; this.orderModelOptions = null; this.orderModelLoading = null;
+    this.orderModelSearch = InputState.new({ placeholder: "Find model…" });
+    this.orderModelSearch.on("change", (_event, cx) => cx.notify());
     this.edits = new Map(); this.questions = new Map();
     this.navigationDrafts = new Map(); this.navigationFiles = new Map();
     this.reviewNotes = new Map();
@@ -158,12 +161,18 @@ export default class Annotator extends View {
     const snapshot = this.data?.snapshot;
     if (this.busy || this.ordering || this.snapshotError || !snapshot || snapshot.files.length < 2 || snapshot.files.length > 200) return;
     const context = this.context, key = reviewOrderKey(snapshot), runner = this.orderRunner();
+    const model = runner === "opencode" ? shared("annotator.orderModel") ?? null : null;
+    const target = runner === "opencode" ? this.currentSession()?.address ?? null : null;
+    if (runner === "opencode" && !model && !target) {
+      this.error = "Source chat unavailable. Choose an ordering model."; this.openOrderModels(cx); return;
+    }
     const token = {}; this.ordering = token; this.error = null;
     this.notice = "Ordering files with a one-time AI request…";
     this.publishUpdateState(); cx.notify();
     cx.spawn(async cx => {
       try {
-        const result = await this.request({ op: "order", scope: snapshot.scope, revision: snapshot.revision, view: snapshot.view, runner });
+        const result = await this.request({ op: "order", scope: snapshot.scope, revision: snapshot.revision, view: snapshot.view, runner,
+          ...(runner === "opencode" ? { model, target } : {}) });
         if (token.cancelled || this.closed || contextKey() !== context || this.context !== context) return;
         if (reviewOrderKey(this.data?.snapshot) !== key || this.data?.snapshot.revision !== result.revision || this.snapshotError) {
           this.notice = "Diff or preview changed during ordering. Click Order logically to try again."; return;
@@ -185,15 +194,59 @@ export default class Annotator extends View {
 
   orderRunner() { return shared("annotator.orderRunner") === "pi" ? "pi" : "opencode"; }
 
+  openOrderModels(cx) {
+    this.orderModelOpen = true; this.orderModelOptions = null;
+    const token = {}; this.orderModelLoading = token;
+    const context = this.context, scope = this.data?.snapshot.scope ?? location().scope;
+    const target = this.currentSession()?.address ?? null;
+    this.orderModelSearch.set_value(""); cx.notify();
+    cx.spawn(async cx => {
+      try {
+        const data = await this.request({ op: "order_models", scope, target });
+        if (this.closed || this.context !== context || this.currentSession()?.address !== (target ?? undefined)
+          || this.orderModelLoading !== token) return;
+        this.orderModelOptions = data;
+      } catch (error) {
+        if (!this.closed && this.context === context && this.orderModelLoading === token)
+          this.orderModelOptions = { error: String(error), models: [] };
+      } finally {
+        if (this.orderModelLoading === token) this.orderModelLoading = null;
+        if (!this.closed) cx.notify();
+      }
+    });
+  }
+
+  orderModelPanel() {
+    const t = theme(), options = this.orderModelOptions;
+    const search = this.orderModelSearch.value().trim().toLowerCase();
+    const choose = (model, cx) => { setShared("annotator.orderModel", model); this.orderModelOpen = false; cx.notify(); };
+    const label = model => `${model.providerID}/${model.id}${model.variant ? `#${model.variant}` : ""}`;
+    return v_flex().id("order-model-picker").flex_none().p(10).gap(5).bg(t.chrome)
+      .child(h_flex().gap(5).items_center()
+        .child(div().flex_1().font_semibold().child("Ordering model"))
+        .child(this.button("order-model-refresh", "↻", cx => this.openOrderModels(cx), !this.orderModelLoading))
+        .child(this.button("order-model-close", "Close", cx => { this.orderModelOpen = false; cx.notify(); })))
+      .child(this.button("order-model-auto", options?.source ? `Source chat · ${label(options.source)}` : "Source chat · auto", cx => choose(null, cx)))
+      .when(Boolean(options?.source_error || options?.error), el => el.child(div().text_size(11).text_color(t.ansi3).child(options.error ?? options.source_error)))
+      .child(Input.new(this.orderModelSearch).id("order-model-search").w_full())
+      .child(v_flex().max_h(180).overflow_y_scrollbar().gap(3)
+        .when(Boolean(this.orderModelLoading), el => el.child("Loading models…"))
+        .children((options?.models ?? []).filter(item => `${item.name} ${label(item.model)}`.toLowerCase().includes(search))
+          .map((item, index) => this.button(`order-model-choice-${index}`, label(item.model), cx => choose(item.model, cx)))));
+  }
+
   orderButton(id) {
     const runner = this.orderRunner(), label = runner === "pi" ? "Pi" : "OpenCode";
     return h_flex().gap(3).items_center()
       .child(this.button(`${id}-runner`, `AI: ${label}`, cx => {
-        setShared("annotator.orderRunner", runner === "pi" ? "opencode" : "pi"); cx.notify();
-      }, !this.ordering).tooltip(`Switch to ${runner === "pi" ? "OpenCode" : "Pi via Herdr Core"}. Changes the runner only; does not start a request.`))
+        setShared("annotator.orderRunner", runner === "pi" ? "opencode" : "pi"); this.orderModelOpen = false; cx.notify();
+       }, !this.ordering).tooltip(`Switch to ${runner === "pi" ? "OpenCode" : "Pi via Herdr Core"}. Changes the runner only; does not start a request.`))
+      .when(runner === "opencode", el => el.child(this.button(`${id}-model`, shared("annotator.orderModel")?.id ?? "Source chat ▾", cx => {
+        if (this.orderModelOpen) { this.orderModelOpen = false; cx.notify(); } else this.openOrderModels(cx);
+      }, !this.ordering).tooltip("Ordering model only; does not change the source chat or global default.")))
       .child(this.button(id, this.ordering ? "Ordering…" : "Order logically", cx => this.orderLogically(cx),
       !this.ordering && !this.snapshotError && Boolean(this.data && this.data.snapshot.files.length >= 2 && this.data.snapshot.files.length <= 200))
-      .tooltip(`One-time AI request via ${label}. Sends bounded diff samples to its configured model; no saved conversation or tools.`));
+       .tooltip(`One-time AI request via ${label}. ${runner === "pi" ? "Uses Pi's configured model" : "Uses the source chat model or your ordering override"}; no saved conversation or tools.`));
   }
 
   updatePanel() {
@@ -482,7 +535,7 @@ export default class Annotator extends View {
       if (this.reviewShortcut(cx)) cx.stop_propagation();
       return;
     }
-    if (event.key === "escape") { this.requeue = null; this.exportText = null; cx.notify(); }
+    if (event.key === "escape") { this.requeue = null; this.exportText = null; this.orderModelOpen = false; cx.notify(); }
   }
 
   focusReview() {
@@ -493,7 +546,7 @@ export default class Annotator extends View {
   reviewShortcut(cx, commentComposer = this.editorFocused) {
     // Nested editors keep their own shortcuts. Never send a batch while a reply,
     // ref picker, or unfinished comment elsewhere in this comparison is open.
-    if (this.busy || this.snapshotError || this.baseOpen || this.scopeMenuOpen || this.editDraft || this.questionDraft
+    if (this.busy || this.snapshotError || this.baseOpen || this.scopeMenuOpen || this.orderModelOpen || this.editDraft || this.questionDraft
       || [...this.githubDrafts.keys()].some(key => JSON.parse(key)[0] === this.context)) return false;
     if (this.editor.value().trim()) {
       if (!commentComposer) return false;
@@ -1138,6 +1191,7 @@ export default class Annotator extends View {
         .child(this.button("scope-last-commit", "Last commit", cx => this.changeComparison("last_commit", null, cx), !data || Boolean(data.snapshot.head), this.mode === "last_commit" ? "secondary" : "quiet"))
         .child(this.button("scope-branch", "Branch", cx => this.changeComparison("branch", this.base, cx), true, this.mode === "branch" ? "secondary" : "quiet"))))
       .when(this.baseOpen, el => el.child(this.basePicker()))
+      .when(this.orderModelOpen, el => el.child(this.orderModelPanel()))
       .child(v_resizable("annotator-sections").flex_1().min_h(0)
         .on_resize((sizes, cx) => { this.sizes = sizes; setShared("annotator.sections", sizes); cx.notify(); })
         .child(resizable_panel().size(this.sizes[0]).size_range(50).visible(this.view === "diff" && this.filesOpen && files.length > 0)

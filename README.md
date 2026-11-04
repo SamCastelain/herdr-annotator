@@ -67,8 +67,12 @@ check the chat before an explicit retry.
 
 Click **Order logically** in the sidebar or full review to arrange changed files
 for reading. **Reset order** restores Git order. Click **AI: OpenCode / Pi** to
-switch runners. Both run on the app machine using their configured model/auth;
-OpenCode requires V2, while Pi runs through local Herdr Core (`hc exec`). Each
+switch runners. OpenCode V2 defaults to the source chat's model and reasoning
+variant. Click **Source chat ▾** to choose an ordering-only model or return to
+automatic selection. This never changes your chat or global default. Ambiguous
+session matches and remote source chats require an explicit model choice.
+Both runners run on the app machine; Pi uses its configured model/auth through
+local Herdr Core (`hc exec`). Each
 ordering click sends one AI request with paths and bounded diff samples,
 including for SSH checkouts. No tools, saved conversation, or messages to your
 working chat. Pi extensions, MCP, skills, prompt templates and context files are

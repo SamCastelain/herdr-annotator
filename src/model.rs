@@ -79,6 +79,16 @@ pub enum OrderingRunner {
     Pi,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrderingModel {
+    pub id: String,
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -88,7 +98,16 @@ pub enum Request {
         #[serde(default)]
         runner: OrderingRunner,
         #[serde(default)]
+        model: Option<OrderingModel>,
+        #[serde(default)]
+        target: Option<String>,
+        #[serde(default)]
         view: ViewSpec,
+    },
+    OrderModels {
+        scope: Scope,
+        #[serde(default)]
+        target: Option<String>,
     },
     Snapshot {
         scope: Scope,
@@ -202,6 +221,7 @@ impl Request {
         match self {
             Self::Snapshot { scope, .. }
             | Self::Order { scope, .. }
+            | Self::OrderModels { scope, .. }
             | Self::Add { scope, .. }
             | Self::Edit { scope, .. }
             | Self::Delete { scope, .. }
@@ -227,9 +247,10 @@ impl Request {
             | Self::Read { view, .. }
             | Self::Export { view, .. }
             | Self::Send { view, .. } => view.clone(),
-            Self::Github { .. } | Self::GithubRead { .. } | Self::GithubReply { .. } => {
-                ViewSpec::default()
-            }
+            Self::OrderModels { .. }
+            | Self::Github { .. }
+            | Self::GithubRead { .. }
+            | Self::GithubReply { .. } => ViewSpec::default(),
         }
     }
 }
