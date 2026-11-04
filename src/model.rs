@@ -344,8 +344,7 @@ impl ReviewedDraft {
                     && selected.end - selected.start < 200
                     && lines.selected.len() == (selected.end - selected.start + 1) as usize
                     && lines.before.len() <= 2
-                    && lines.after.len() <= 2 =>
-            {}
+                    && lines.after.len() <= 2 => {}
             _ => return Err("Invalid reviewed selection".into()),
         }
         let selection = self.anchor.locate(file).ok_or("The selected code changed or is ambiguous. Your draft is kept; select its intended lines again, or choose Whole file.")?;
