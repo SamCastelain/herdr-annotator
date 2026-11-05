@@ -1,10 +1,9 @@
 //! Read-only discovery. Never select a model from an unrelated/ambiguous chat.
 use crate::{OrderingModel, Result, Scope, executables, git, process};
 use serde_json::{Value, json};
-use std::process::Command;
 
 pub(crate) fn api(path: &str) -> Result<Value> {
-    let mut command = Command::new(executables::tool("opencode", "HERDR_ANNOTATOR_OPENCODE"));
+    let mut command = executables::command("opencode", "HERDR_ANNOTATOR_OPENCODE")?;
     command.args(["api", "get", path]);
     command.env("PATH", executables::runtime_path());
     let output = process::run(&mut command, 192 * 1024)?;
@@ -51,7 +50,7 @@ pub(crate) fn source_model(scope: &Scope, target: &str) -> Result<OrderingModel>
     {
         return Err("Choose a local source terminal ID".into());
     }
-    let mut command = Command::new(executables::tool("hc", "HERDR_ANNOTATOR_HC"));
+    let mut command = executables::command("hc", "HERDR_ANNOTATOR_HC")?;
     command.args(["get", target]);
     let output = process::run(&mut command, 64 * 1024)?;
     if output.code != 0 || output.truncated {

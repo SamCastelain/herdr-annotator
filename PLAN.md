@@ -74,21 +74,44 @@ Primary files: `src/executables.rs`, `src/git.rs`, `src/github.rs`,
 - [x] Replace unconditional Unix permission checks with platform-specific
       executable validation.
 - [x] Resolve the user's home on Windows without requiring `HOME`.
-- [ ] Search Windows executable extensions and appropriate user install
+- [x] Search Windows executable extensions and appropriate user install
       locations while retaining explicit environment overrides.
-- [ ] Keep installer-recorded executable paths as the preferred discovery
+- [x] Keep installer-recorded executable paths as the preferred discovery
       source and validate receipt paths before use.
-- [ ] Audit direct `git`, `gh`, and `hc` launches for consistent discovery
+- [x] Audit direct `git`, `gh`, and `hc` launches for consistent discovery
       from a desktop environment with a restricted PATH.
-- [ ] Handle npm `.cmd` launchers explicitly and safely. Prefer invoking
+- [x] Handle npm `.cmd` launchers explicitly and safely. Prefer invoking
       Node and a resolved script entry point where practical; do not build
       shell command strings containing review content.
 - [ ] Verify OpenCode and Pi runner invocation, including PATH passed
       through local `hc exec` and discovery of Pi's Node runtime.
 - [ ] Test paths and arguments containing spaces, parentheses,
       apostrophes, Unicode, and shell metacharacters.
-- [ ] Retain the existing policy of not sourcing interactive shell files
+- [x] Retain the existing policy of not sourcing interactive shell files
       merely to discover tools.
+
+Implementation notes for increment 3:
+
+- Local Git, GitHub CLI, and all core launches use shared discovery and runtime
+  PATH; `HERDR_ANNOTATOR_GIT` is available alongside the existing overrides.
+  Remote Git continues to resolve on the target machine.
+- Added Windows Git/GitHub CLI install locations, pnpm and Scoop directories.
+- Known npm runner shims resolve through package manifests to contained entry
+  points, invoked with Node and literal argv. No batch text is executed or
+  parsed. Unsupported batch launchers fail closed, including Node overrides.
+- Pi forwards the resolved program and entry-point arguments through local
+  `hc exec`, with the augmented PATH. Native runner validation remains open;
+  Unix ordering regression fixtures still exercise the existing invocation.
+- Root-commit empty-tree hashing reads closed stdin rather than a host-specific
+  null-device filename. Git no-index diff's `/dev/null` sentinel is retained.
+- Added isolated discovery precedence/invalid-receipt tests and npm manifest
+  tests with spaces, punctuation and Unicode in installation paths. Native
+  Windows argument/runner validation remains a separate gate.
+- Assistant-run WSL validation: all 96 Rust tests pass (29 library, 13 GitHub,
+  9 ordering, 45 reviews); Linux and Windows-target Clippy pass with warnings
+  denied. No native Windows run was performed by the assistant. Handoff:
+  retain the real Python override and run `cargo test --locked` and
+  `cargo clippy --locked --all-targets -- -D warnings` in native PowerShell.
 
 ## 4. Port installation and runtime configuration
 

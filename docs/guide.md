@@ -331,6 +331,27 @@ See [publishing a release](releases.md) for the maintainer checklist.
 
 ## Commands and open-file API
 
+### Helper tool discovery
+
+The helper prefers explicit tool overrides, then valid installer-recorded paths,
+then PATH and known user installation directories. Overrides are
+`HERDR_ANNOTATOR_GIT`, `HERDR_ANNOTATOR_GH`, `HERDR_ANNOTATOR_HC`,
+`HERDR_ANNOTATOR_OPENCODE`, `HERDR_ANNOTATOR_PI`, and `HERDR_ANNOTATOR_NODE`.
+Use real executable paths; interactive shell configuration is never sourced.
+Local tools receive the augmented runtime PATH. Remote Git still resolves on
+the target machine, not against this computer's installation.
+
+On Windows, native `.exe`/`.com` files are supported. Standard npm `.cmd`
+installations of `opencode-ai` and `@mariozechner/pi-coding-agent` can instead
+run via Node and their package's declared entry point. The shim is never
+executed or parsed, and review text stays in literal arguments. Other batch
+launchers are unsupported. Node can be overridden explicitly; otherwise a
+runtime beside the shim is preferred, then normal tool discovery. pnpm or
+other layouts without an adjacent `node_modules` package need a native runner
+or a supported npm installation. Native ordering remains manually unverified.
+
+### View commands
+
 These commands target a loaded Annotator view. They obey the same draft,
 snapshot, recipient, and delivery checks as the buttons:
 

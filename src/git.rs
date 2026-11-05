@@ -16,13 +16,13 @@ pub(crate) fn run(mut command: Command) -> Result<Output> {
     Ok(out)
 }
 
-fn hc() -> Command {
-    Command::new(std::env::var_os("HERDR_ANNOTATOR_HC").unwrap_or_else(|| "hc".into()))
+fn hc() -> Result<Command> {
+    crate::executables::command("hc", "HERDR_ANNOTATOR_HC")
 }
 
 pub(crate) fn git(scope: &Scope, args: &[&str]) -> Result<Output> {
     let mut command = if let Some(machine) = &scope.machine {
-        let mut command = hc();
+        let mut command = hc()?;
         command.args([
             "exec",
             "--on",
@@ -35,7 +35,7 @@ pub(crate) fn git(scope: &Scope, args: &[&str]) -> Result<Output> {
         ]);
         command
     } else {
-        Command::new("git")
+        crate::executables::command("git", "HERDR_ANNOTATOR_GIT")?
     };
     command
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -220,7 +220,7 @@ pub fn snapshot(scope: &Scope, view: &ViewSpec) -> Result<Snapshot> {
         } else {
             // The root commit compares against the empty tree. hash-object reads
             // only; without -w it never creates an object or changes the index.
-            required(&scope, &["hash-object", "-t", "tree", "/dev/null"])?
+            required(&scope, &["hash-object", "-t", "tree", "--stdin"])?
                 .trim()
                 .to_owned()
         })
@@ -523,7 +523,7 @@ fn inspect_target(scope: &Scope, target: &str, allow_working: bool) -> Result<Se
             "Choose a terminal ID on the reviewed machine, not a name or another machine".into(),
         );
     }
-    let mut command = hc();
+    let mut command = hc()?;
     command.args(["get", target]);
     let out = run(command)?;
     if out.code != 0 || out.truncated {
@@ -568,7 +568,7 @@ pub fn send(target: &str, text: &str) -> Result<()> {
 }
 
 pub(crate) fn send_review(target: &str, text: &str, status: SendStatus) -> Result<()> {
-    let mut command = hc();
+    let mut command = hc()?;
     let status = match status {
         SendStatus::Idle => "idle",
         SendStatus::Working => "working",

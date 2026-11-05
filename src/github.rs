@@ -5,7 +5,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const TTL: u64 = 300;
@@ -445,8 +444,7 @@ fn repository(url: &str) -> Option<String> {
 }
 
 fn gh(args: &[String]) -> Result<Value> {
-    let mut command =
-        Command::new(std::env::var_os("HERDR_ANNOTATOR_GH").unwrap_or_else(|| "gh".into()));
+    let mut command = crate::executables::command("gh", "HERDR_ANNOTATOR_GH")?;
     command
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_PAGER", "cat")
