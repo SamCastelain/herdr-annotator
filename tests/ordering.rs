@@ -1,4 +1,8 @@
 //! Fake generation only. Never calls a model or touches a working chat.
+// These fixtures execute Unix shebang scripts. Native Windows runner fixtures
+// will be added with the ordering invocation adapter.
+#![cfg(unix)]
+
 use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 use tempfile::TempDir;

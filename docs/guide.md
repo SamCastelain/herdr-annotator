@@ -478,6 +478,32 @@ Rust tests use disposable repositories and fake core commands. They exercise
 persisted notes, anchoring, literal paths, symlinks, parallel writes, worktree
 isolation and delivery failure handling without contacting a real agent.
 
+### Native Windows helper tests
+
+Windows support is in development; the installer/updater and native ordering
+fixtures are not yet ported. To test the Rust helper, select the real Python
+interpreter before running the tests from native PowerShell:
+
+```powershell
+$env:HERDR_ANNOTATOR_TEST_PYTHON = python -c "import sys; print(sys._base_executable)"
+cargo test --locked --lib
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+Use an absolute interpreter path, not the WindowsApps `python.exe` App Execution
+Alias. Native testing found that the alias can leave the running interpreter's
+descendants outside the Job Object, defeating child-tree cleanup. A Job Object
+does not contain processes activated through an external broker. The override
+affects test fixtures only and lasts for the current PowerShell session.
+
+Python subprocess fixtures share a test-only mutex so concurrent interpreter
+startup does not consume their short timeout budgets before diagnostics are
+written. Cleanup assertions and production subprocess deadlines are unchanged;
+other tests, including concurrent review writes, still run normally.
+
+### Native UI validation
+
 Herdr's check covers initial rendering only. Inspect `herdr-app status` and a
 `herdr-app shot` in a review tab after UI edits. Keep test feedback away from
 live agents. Tests do not send feedback to real agents.

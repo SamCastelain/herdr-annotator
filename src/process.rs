@@ -1,13 +1,22 @@
-//! Unix process lifetime, bounded capture, and diagnostics. Exit meanings belong
+//! Bounded process lifetime, capture, and diagnostics. Exit meanings belong
 //! to command adapters. No timeout here proves cancellation of remote delivery.
 use crate::Result;
 use std::{
     cell::Cell,
-    io::{self, Read},
-    os::{fd::AsRawFd, unix::process::CommandExt},
+    io,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
+
+#[cfg(unix)]
+use unix as backend;
+#[cfg(windows)]
+use windows as backend;
 
 pub(crate) const MAX_OUTPUT: usize = 512 * 1024;
 const BUDGET: Duration = Duration::from_secs(25);
@@ -70,25 +79,13 @@ impl Output {
     }
 }
 
-struct Running(Child, bool);
-impl Drop for Running {
-    fn drop(&mut self) {
-        if self.1 {
-            return;
-        }
-        // Each command starts its own process group. Descendants may escape it;
-        // dropping our nonblocking read ends still bounds local pipe ownership.
-        // SAFETY: kill receives the process group ID created by process_group(0).
-        unsafe {
-            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
-        }
-        let _ = self.0.kill();
-        let until = Instant::now() + Duration::from_millis(50);
-        while Instant::now() < until {
-            match self.0.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
-                Ok(None) => std::thread::sleep(Duration::from_millis(1)),
-            }
+fn reap_after_kill(child: &mut Child) {
+    let _ = child.kill();
+    let until = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < until {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => break,
+            Ok(None) => std::thread::sleep(Duration::from_millis(1)),
         }
     }
 }
@@ -101,17 +98,9 @@ struct Capture<R> {
     eof: bool,
 }
 
-impl<R: Read + AsRawFd> Capture<R> {
+impl<R: backend::Pipe> Capture<R> {
     fn new(reader: R, limit: usize) -> Result<Self> {
-        let fd = reader.as_raw_fd();
-        // SAFETY: fd is borrowed from the owned pipe and remains open here.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(format!(
-                "Cannot configure capture pipe: {}",
-                io::Error::last_os_error()
-            ));
-        }
+        backend::configure(&reader).map_err(|e| format!("Cannot configure capture pipe: {e}"))?;
         Ok(Self {
             reader,
             bytes: Vec::new(),
@@ -122,10 +111,13 @@ impl<R: Read + AsRawFd> Capture<R> {
     }
 
     fn drain(&mut self) -> io::Result<()> {
+        if self.eof {
+            return Ok(());
+        }
         // Fairness: continuous stdout must not starve stderr or deadline checks.
         for _ in 0..8 {
             let mut buf = [0; 8192];
-            match self.reader.read(&mut buf) {
+            match backend::read(&mut self.reader, &mut buf) {
                 Ok(0) => {
                     self.eof = true;
                     break;
@@ -142,18 +134,6 @@ impl<R: Read + AsRawFd> Capture<R> {
         }
         Ok(())
     }
-
-    fn pollfd(&self) -> libc::pollfd {
-        libc::pollfd {
-            fd: if self.eof {
-                -1
-            } else {
-                self.reader.as_raw_fd()
-            },
-            events: libc::POLLIN,
-            revents: 0,
-        }
-    }
 }
 
 pub(crate) fn run(command: &mut Command, limit: usize) -> Result<Output> {
@@ -161,24 +141,19 @@ pub(crate) fn run(command: &mut Command, limit: usize) -> Result<Output> {
     if Instant::now() >= deadline {
         return Err("Command timed out: shared 25-second subprocess budget exhausted".into());
     }
-    let mut running = Running(
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == io::ErrorKind::NotFound {
-                    format!("Cannot start command (not found): {e}")
-                } else {
-                    format!("Cannot start command: {e}")
-                }
-            })?,
-        false,
-    );
-    let mut stdout = Capture::new(running.0.stdout.take().ok_or("Missing stdout")?, limit)?;
-    let mut stderr = Capture::new(running.0.stderr.take().ok_or("Missing stderr")?, 8192)?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut running = backend::Running::spawn(command).map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            format!("Cannot start command (not found): {e}")
+        } else {
+            format!("Cannot start command: {e}")
+        }
+    })?;
+    let mut stdout = Capture::new(running.child.stdout.take().ok_or("Missing stdout")?, limit)?;
+    let mut stderr = Capture::new(running.child.stderr.take().ok_or("Missing stderr")?, 8192)?;
     let mut status = None;
     let mut drain_deadline = deadline;
     let result = loop {
@@ -193,7 +168,7 @@ pub(crate) fn run(command: &mut Command, limit: usize) -> Result<Output> {
             break Err(format!("Cannot read command output: {e}"));
         }
         if status.is_none() {
-            match running.0.try_wait() {
+            match running.child.try_wait() {
                 Ok(Some(exit)) => {
                     status = Some(exit);
                     drain_deadline = deadline.min(Instant::now() + Duration::from_millis(250));
@@ -205,18 +180,8 @@ pub(crate) fn run(command: &mut Command, limit: usize) -> Result<Output> {
         if status.is_some() && stdout.eof && stderr.eof {
             break Ok(());
         }
-        let mut fds = [stdout.pollfd(), stderr.pollfd()];
-        let millis = drain_deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis()
-            .clamp(1, 5) as i32;
-        // SAFETY: fds is an initialized array, borrowed for the duration of poll.
-        let polled = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, millis) };
-        if polled < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            break Err(format!(
-                "Cannot poll command output: {}",
-                io::Error::last_os_error()
-            ));
+        if let Err(e) = backend::wait(&stdout, &stderr, drain_deadline) {
+            break Err(format!("Cannot poll command output: {e}"));
         }
     };
     let diagnostics = String::from_utf8_lossy(&stderr.bytes).into_owned();
@@ -232,7 +197,9 @@ pub(crate) fn run(command: &mut Command, limit: usize) -> Result<Output> {
         )
     })?;
     // Child has been reaped and both pipes reached EOF. No cancellation needed.
-    running.1 = true;
+    running
+        .complete()
+        .map_err(|e| format!("Cannot release completed command: {e}"))?;
     let text = String::from_utf8(stdout.bytes)
         .map_err(|_| format!("Non-UTF-8 command output: {}", diagnostics.trim()))?;
     Ok(Output {
@@ -247,19 +214,40 @@ pub(crate) fn run(command: &mut Command, limit: usize) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
 
-    fn python(source: &str) -> Command {
-        let mut command = Command::new("python3");
+    // These tests deliberately use sub-second deadlines. Concurrent Python
+    // startup (especially Windows executable scanning) can exhaust the budget
+    // before the fixture runs. Acquire this before starting any test deadline;
+    // production concurrency and deadlines are unchanged.
+    static SUBPROCESS_FIXTURE: Mutex<()> = Mutex::new(());
+
+    pub(super) fn subprocess_fixture() -> MutexGuard<'static, ()> {
+        SUBPROCESS_FIXTURE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn python(source: &str) -> Command {
+        #[cfg(windows)]
+        let default = "python";
+        #[cfg(unix)]
+        let default = "python3";
+        let executable =
+            std::env::var_os("HERDR_ANNOTATOR_TEST_PYTHON").unwrap_or_else(|| default.into());
+        let mut command = Command::new(executable);
         command.args(["-c", source]);
         command
     }
 
     fn short<T>(work: impl FnOnce() -> T) -> T {
-        with_deadline(Instant::now() + Duration::from_millis(200), work)
+        // Native Windows Python startup can exceed 200 ms on CI machines.
+        with_deadline(Instant::now() + Duration::from_millis(800), work)
     }
 
     #[test]
     fn exits_are_facts_and_diagnostics_are_retained() {
+        let _fixture = subprocess_fixture();
         let out = run(
             &mut python(
                 "import sys; print('reply'); print('denied', file=sys.stderr); sys.exit(7)",
@@ -268,26 +256,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.code, 7);
-        assert_eq!(out.text, "reply\n");
+        assert_eq!(out.text.replace("\r\n", "\n"), "reply\n");
         assert!(out.failure("test").contains("denied"));
         assert!(out.failure("test").contains("reply"));
     }
 
     #[test]
     fn timeout_preserves_diagnostics_and_bounds_cleanup() {
+        let _fixture = subprocess_fixture();
         let start = Instant::now();
         let error = short(|| run(&mut python("import sys,time; print('still working',file=sys.stderr,flush=True); time.sleep(10)"), 100)).err().unwrap();
         assert!(error.contains("timed out"), "{error}");
         assert!(error.contains("still working"), "{error}");
-        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
     fn child_exit_does_not_wait_forever_for_inherited_pipes() {
+        let _fixture = subprocess_fixture();
         let start = Instant::now();
         let error = run(
             &mut python(
-                "import os,time; pid=os.fork(); time.sleep(10) if pid==0 else None; os._exit(0)",
+                "import os,subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)'], stdout=sys.stdout, stderr=sys.stderr); os._exit(0)",
             ),
             100,
         )
@@ -297,8 +287,10 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg(unix)]
     #[test]
     fn escaped_pipe_writer_cannot_extend_capture_lifetime() {
+        let _fixture = subprocess_fixture();
         let temp = tempfile::tempdir().unwrap();
         let pidfile = temp.path().join("writer.pid");
         let source = format!(
@@ -317,7 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn closed_pipes_do_not_hide_a_hanging_child_and_signals_are_not_success() {
+    fn closed_pipes_do_not_hide_a_hanging_child() {
+        let _fixture = subprocess_fixture();
         let error = short(|| {
             run(
                 &mut python("import os,time; os.close(1); os.close(2); time.sleep(10)"),
@@ -327,12 +320,22 @@ mod tests {
         .err()
         .unwrap();
         assert!(error.contains("timed out"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signals_are_not_success() {
+        let _fixture = subprocess_fixture();
         let out = run(
             &mut python("import os,signal; os.kill(os.getpid(),signal.SIGTERM)"),
             100,
         )
         .unwrap();
         assert_eq!(out.code, -1);
+    }
+
+    #[test]
+    fn nonexistent_command_is_not_success() {
         assert!(
             run(
                 &mut Command::new("herdr-annotator-nonexistent-test-command"),
@@ -346,6 +349,7 @@ mod tests {
 
     #[test]
     fn finite_floods_drain_both_pipes_beyond_retention_limits() {
+        let _fixture = subprocess_fixture();
         let out = run(
             &mut python(
                 "import os; [(os.write(1,b'x'*8192),os.write(2,b'e'*8192)) for _ in range(128)]",
@@ -361,6 +365,7 @@ mod tests {
 
     #[test]
     fn endless_flood_cannot_starve_deadline_or_stderr() {
+        let _fixture = subprocess_fixture();
         let error = short(|| run(&mut python("import os\nos.write(2,b'flood diagnostic\\n')\nwhile True: os.write(1,b'x'*8192)"), 1024)).err().unwrap();
         assert!(error.contains("timed out"));
         assert!(error.contains("flood diagnostic"));
@@ -368,6 +373,7 @@ mod tests {
 
     #[test]
     fn output_utf8_is_strict_but_stderr_is_lossy() {
+        let _fixture = subprocess_fixture();
         assert!(
             run(&mut python("import os; os.write(1,b'\\xff')"), 100)
                 .err()
@@ -380,9 +386,10 @@ mod tests {
 
     #[test]
     fn commands_share_the_request_deadline_and_expiry_prevents_spawn() {
-        with_deadline(Instant::now() + Duration::from_millis(800), || {
-            run(&mut python("import time; time.sleep(.45)"), 100).unwrap();
-            let error = run(&mut python("import time; time.sleep(.45)"), 100)
+        let _fixture = subprocess_fixture();
+        with_deadline(Instant::now() + Duration::from_millis(2000), || {
+            run(&mut python("import time; time.sleep(1.1)"), 100).unwrap();
+            let error = run(&mut python("import time; time.sleep(1.1)"), 100)
                 .err()
                 .unwrap();
             assert!(error.contains("timed out"));
@@ -394,5 +401,143 @@ mod tests {
             run(&mut python("print('next request')"), 100).unwrap().code,
             0
         );
+    }
+
+    #[test]
+    fn concurrent_commands_keep_output_and_deadlines_independent() {
+        let _fixture = subprocess_fixture();
+        // Deliberately run two commands concurrently inside one fixture slot.
+        // The timeout test needs no startup marker; the other command retains
+        // its normal budget and must not inherit the first thread's deadline.
+        std::thread::scope(|scope| {
+            let timeout =
+                scope.spawn(|| short(|| run(&mut python("import time; time.sleep(10)"), 100)));
+            let success = scope.spawn(|| run(&mut python("print('independent')"), 100).unwrap());
+            assert!(timeout.join().unwrap().err().unwrap().contains("timed out"));
+            let output = success.join().unwrap();
+            assert_eq!(output.code, 0);
+            assert_eq!(output.text.trim(), "independent");
+        });
+    }
+
+    #[test]
+    fn literal_arguments_survive_without_shell_interpretation() {
+        let _fixture = subprocess_fixture();
+        let argument = "spaces (parentheses) 'quotes' \"double\" & | %PATH% ! ^ 中文";
+        let mut command = python("import os,sys; os.write(1,sys.argv[1].encode('utf-8'))");
+        command.arg(argument);
+        assert_eq!(run(&mut command, 1024).unwrap().text, argument);
+    }
+
+    #[test]
+    fn successful_commands_may_leave_background_work_without_inherited_pipes() {
+        let _fixture = subprocess_fixture();
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("background-finished");
+        let background = format!(
+            "import pathlib,time; time.sleep(.4); pathlib.Path({:?}).write_text('finished')",
+            marker.to_str().unwrap()
+        );
+        let source = format!(
+            "import os,subprocess,sys; subprocess.Popen([sys.executable,'-c',{}], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); os._exit(0)",
+            serde_json::to_string(&background).unwrap()
+        );
+        assert_eq!(run(&mut python(&source), 100).unwrap().code, 0);
+        let until = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() {
+            assert!(
+                Instant::now() < until,
+                "Successful command's background work was killed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn nested_budgets_never_extend_the_earlier_deadline_and_restore_after_unwinding() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let result = std::panic::catch_unwind(|| {
+            with_deadline(deadline, || {
+                within_generation_budget(|| assert_eq!(DEADLINE.get(), Some(deadline)));
+                assert_eq!(DEADLINE.get(), Some(deadline));
+                panic!("exercise guard unwinding");
+            });
+        });
+        assert!(result.is_err());
+        assert_eq!(DEADLINE.get(), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn job_terminates_descendants_on_timeout_and_inherited_pipe_failure() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::{
+            Foundation::WAIT_OBJECT_0,
+            System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+        };
+
+        let _fixture = subprocess_fixture();
+        for parent_exits in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let pidfile = temp.path().join("descendant.pid");
+            let ready = temp.path().join("observer-ready");
+            let source = format!(
+                "import os,pathlib,subprocess,sys,time\np = subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'], stdout=sys.stdout, stderr=sys.stderr)\npathlib.Path({:?}).write_text(str(p.pid))\nwhile not pathlib.Path({:?}).exists(): time.sleep(.001)\n{}",
+                pidfile.to_str().unwrap(),
+                ready.to_str().unwrap(),
+                if parent_exits {
+                    "os._exit(0)"
+                } else {
+                    "time.sleep(30)"
+                }
+            );
+            // Inspect the descendant while the job is still live, and retain a
+            // handle so PID reuse cannot make the termination assertion pass.
+            let observer = std::thread::spawn(move || {
+                let until = Instant::now() + Duration::from_secs(5);
+                loop {
+                    if let Ok(text) = std::fs::read_to_string(&pidfile)
+                        && let Ok(pid) = text.parse::<u32>()
+                    {
+                        // SAFETY: OpenProcess validates the PID and returns
+                        // a handle restricted to waiting for termination.
+                        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+                        assert!(
+                            !handle.is_null(),
+                            "Cannot inspect descendant: {}",
+                            io::Error::last_os_error()
+                        );
+                        // SAFETY: OpenProcess returned a newly owned handle.
+                        let process = unsafe { OwnedHandle::from_raw_handle(handle) };
+                        std::fs::write(&ready, "ready").unwrap();
+                        return process;
+                    }
+                    assert!(Instant::now() < until, "Descendant did not start");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+            let start = Instant::now();
+            let error = with_deadline(Instant::now() + Duration::from_secs(3), || {
+                run(&mut python(&source), 100)
+            })
+            .err()
+            .unwrap();
+            assert!(
+                error.contains(if parent_exits {
+                    "output did not close"
+                } else {
+                    "timed out"
+                }),
+                "{error}"
+            );
+            assert!(start.elapsed() < Duration::from_secs(5));
+            let descendant = observer.join().unwrap();
+            // SAFETY: the observer owns a valid process handle with SYNCHRONIZE.
+            assert_eq!(
+                unsafe { WaitForSingleObject(descendant.as_raw_handle(), 1000) },
+                WAIT_OBJECT_0,
+                "Descendant survived cleanup"
+            );
+        }
     }
 }

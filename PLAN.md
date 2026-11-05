@@ -37,30 +37,34 @@ need verification.
 
 ## 2. Add a Windows subprocess backend
 
-Primary file: `src/process.rs`.
+Primary files: `src/process.rs`, `src/process/unix.rs`, and
+`src/process/windows.rs`. Implementation and native Windows test validation
+are complete, with the real-executable requirement documented below.
 
-- [ ] Separate shared request deadlines, output limits, result types, and
+- [x] Separate shared request deadlines, output limits, result types, and
       diagnostics from platform-specific process and pipe management.
-- [ ] Keep Unix process groups, signals, `fcntl`, and `poll` behind Unix
+- [x] Keep Unix process groups, signals, `fcntl`, and `poll` behind Unix
       configuration gates.
-- [ ] Implement Windows child lifetime management, preferably with Job
+- [x] Implement Windows child lifetime management, preferably with Job
       Objects, including a safe strategy for assigning spawned processes
       before descendants can escape management.
-- [ ] Capture stdout and stderr concurrently with bounded retention and
+- [x] Capture stdout and stderr concurrently with bounded retention and
       fair draining, even when output exceeds retention limits.
-- [ ] Ensure inherited pipe handles cannot extend capture indefinitely
+- [x] Ensure inherited pipe handles cannot extend capture indefinitely
       after the direct child exits. Do not introduce indefinitely blocked
       reader threads or cleanup waits.
-- [ ] Preserve shared 25-second request budgets, 120-second generation
+- [x] Preserve shared 25-second request budgets, 120-second generation
       budgets, and the bounded post-exit drain period.
-- [ ] Preserve diagnostics on timeout, strict UTF-8 stdout handling, lossy
+- [x] Preserve diagnostics on timeout, strict UTF-8 stdout handling, lossy
       stderr decoding, truncation flags, and nonzero exit handling.
-- [ ] Bound cleanup for errors, timeouts, and unwinding; close owned handles.
-- [ ] Avoid visible console windows for background helper commands where
+- [x] Bound cleanup for errors, timeouts, and unwinding; close owned handles.
+- [x] Avoid visible console windows for background helper commands where
       appropriate, without breaking core or runner invocation.
-- [ ] Preserve the rule that local cancellation does not prove remote
+- [x] Preserve the rule that local cancellation does not prove remote
       delivery was cancelled or never happened.
-- [ ] Scope any new Windows dependencies in `Cargo.toml` appropriately.
+- [x] Scope any new Windows dependencies in `Cargo.toml` appropriately.
+- [x] Run the subprocess and storage unit tests natively on Windows and
+      relay failures before treating these runtime guarantees as verified.
 
 ## 3. Make executable discovery and invocation portable
 
@@ -263,15 +267,73 @@ Primary files: `.github/workflows/check.yml`, `tests/ordering.rs`,
   platform booleans. Fake environment lookups keep tests isolated.
 - Added environment-independent path tests and platform-portable storage,
   locking, and executable validation tests. Native Windows verification is
-  still pending; the Unix-only subprocess backend and test fixtures still
-  prevent the full Windows Rust suite from compiling.
+  still pending. At the end of this increment, the Unix-only subprocess
+  backend and test fixtures still prevented Windows Rust compilation;
+  increment 2 addresses that compilation barrier.
 - WSL validation: all 88 Rust tests pass (8 new on Unix), as do formatting and
   Clippy with warnings denied. The unchanged JavaScript and Python suites
   passed the baseline run (136 and 17 tests respectively).
-- Next increment: isolate shared subprocess policy from Unix mechanics and
-  implement a Windows backend with bounded capture and child-tree cleanup.
+
+### Increment 2: Windows subprocess backend
+
+- Shared deadlines, capture limits, diagnostics, and result handling stay in
+  `src/process.rs`; OS-specific lifetime, pipe reads, and waiting live in
+  `src/process/unix.rs` and `src/process/windows.rs`.
+- Windows starts each child suspended and assigns a non-inherited Job Object
+  before resuming it. Stable Rust does not expose the primary thread handle,
+  so documented ToolHelp APIs locate its sole thread. Ambiguous enumeration
+  fails closed rather than resuming an arbitrary thread.
+- The job disallows breakaway and kills descendants on cancellation or
+  unwinding. Successful commands release kill-on-close, preserving the Unix
+  behavior that intentional background work with closed output pipes may live.
+- Windows capture uses `PeekNamedPipe` and reads only available bytes from
+  solely owned pipes, retaining fair bounded draining and the existing
+  250 ms post-exit drain deadline. There are no blocking reader threads.
+- Added tests for literal argument handling, nested budget restoration,
+  successful background work, Windows Job Object membership/unwinding, and
+  descendant cleanup on timeout/inherited-pipe failure.
+- Shared subprocess tests select `python` on Windows and `python3` on Unix;
+  `HERDR_ANNOTATOR_TEST_PYTHON` overrides either with an explicit executable.
+  Unix-only fork/signal tests and the ordering suite's shebang fixtures are
+  gated; native ordering fixtures remain future work, not verified coverage.
+- WSL validation: all 93 Rust tests pass. Windows-target all-target compilation
+  succeeds with `cargo check --locked --all-targets --target
+  x86_64-pc-windows-gnu`. Formatting and Clippy with warnings denied pass for
+  the Linux and Windows targets. Cross-checks do not execute Windows code.
+- Native Windows handoff: run `cargo test --locked --lib`, then
+  `cargo test --locked` and
+  `cargo clippy --locked --all-targets -- -D warnings`. Relay the revision,
+  commands, and complete failures. Installer/updater Python failures are
+  still expected until their later portability increments.
+- First native Windows library run (user-reported): 25/27 tests pass.
+  `timeout_preserves_diagnostics_and_bounds_cleanup` times out without its
+  expected stderr marker; `job_terminates_descendants_on_timeout_and_inherited_pipe_failure`
+  gets WAIT_TIMEOUT (258) waiting for descendant termination. Keep runtime
+  validation open. Next diagnose serial versus parallel execution and the
+  actual Python executable/launcher before changing cancellation behavior
+  or relaxing test deadlines.
+- Follow-up native Windows runs: using the WindowsApps Python App Execution
+  Alias still fails descendant cleanup with serial tests (26/27 pass). With
+  the real Python 3.15 interpreter selected by `HERDR_ANNOTATOR_TEST_PYTHON`,
+  serial execution passes all 27 tests, including descendant cleanup. Parallel
+  execution passes cleanup but can time out before fixture diagnostics appear.
+- Python subprocess fixtures now share a test-only mutex, acquired before
+  any deadline starts. Production concurrency, budgets, and cleanup assertions
+  are unchanged. Rerun the normal parallel test command on Windows to verify.
+- Added a deliberate two-command concurrency test within one fixture slot to
+  retain coverage of independent thread-local deadlines and output capture.
+  After these changes, all 94 Rust tests pass on WSL; Clippy with warnings
+  denied passes for both Linux and Windows targets.
+- Documented use of a real interpreter rather than an App Execution Alias in
+  `docs/guide.md`. Job containment does not cover external broker activation;
+  installer-recorded Python paths must use `sys.executable`, not the alias.
 
 ### Milestone A: usable native Windows reviews
+
+Latest validation: the user reports Windows tests pass after the subprocess
+fixture changes, using the real Python interpreter override. Native Windows
+test validation for increment 2 is complete. This does not yet establish
+installer/updater portability or native Herdr UI validation.
 
 - Portable helper processes, executable discovery, installation, storage,
   and core path handling.
