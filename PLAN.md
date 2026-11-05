@@ -112,23 +112,27 @@ Implementation notes for increment 3:
   denied. No native Windows run was performed by the assistant. Handoff:
   retain the real Python override and run `cargo test --locked` and
   `cargo clippy --locked --all-targets -- -D warnings` in native PowerShell.
+- Native Windows validation (user-reported): both `cargo test --locked` and
+  `cargo clippy --locked --all-targets -- -D warnings` succeeded after the
+  increment 3 changes. This confirms the test suite and native Clippy pass;
+  it does not establish live OpenCode/Pi runner or native Herdr UI validation.
 
 ## 4. Port installation and runtime configuration
 
 Primary files: `scripts/install.py` and `mods/annotator/main.js`.
 
-- [ ] Define platform-aware helper, receipt, updater, and backup paths.
+- [x] Define platform-aware helper, receipt, updater, and backup paths.
       Keep existing Unix installations compatible.
 - [ ] Respect `HERDR_APP_HOME` and use the verified Windows Herdr app-home
       default rather than guessing it.
-- [ ] Select `target/release/herdr-annotator.exe` on Windows and preserve
+- [x] Select `target/release/herdr-annotator.exe` on Windows and preserve
       the extension in installed and backup binary names.
-- [ ] Record the installer's actual Python interpreter (`sys.executable`)
+- [x] Record the installer's actual Python interpreter (`sys.executable`)
       and use it for subsequent updater launches instead of `python3`.
-- [ ] Expose installed helper and updater configuration to the mod, rather
+- [x] Expose installed helper and updater configuration to the mod, rather
       than relying only on hardcoded Unix paths. Preserve helper overrides
       and propagate configuration into full-review tabs.
-- [ ] Use explicit UTF-8 encoding for Python text files and subprocess
+- [x] Use explicit UTF-8 encoding for installer text files and subprocess
       output where the protocol requires UTF-8.
 - [ ] Verify binary replacement behavior while helpers are running;
       Windows executable sharing rules may require retries or versioned
@@ -138,6 +142,44 @@ Primary files: `scripts/install.py` and `mods/annotator/main.js`.
 - [ ] Verify standalone installation, personal-layout integration,
       private tabs integration, reinstall, and upgrade.
 - [ ] Run `herdr-app check` for both the main mod and generated tabs mod.
+
+Implementation notes for increment 4:
+
+- Helper naming is platform-specific (`.exe` on Windows); receipts, updater,
+  and backup directories retain the existing per-user `.local` layout, in
+  agreement with Rust discovery. Backups retain the helper's extension.
+- Windows requires explicit `HERDR_APP_HOME`: the actual Herdr Windows default
+  has not been verified, and the installer refuses to guess. Unix defaults
+  and the override are unchanged. The app-home verification item stays open.
+- Installer-generated, receipt-protected `runtime.js` records the helper,
+  updater, and actual `sys.executable` interpreter. Main and private tabs mods
+  receive it; full-review props carry it forward, preserving helper overrides.
+  Updater invocation uses the configured interpreter, not hardcoded `python3`.
+- Windows auto-updates are explicitly unsupported until increment 7. No
+  updater process, polling timer, or startup gate is started on that platform.
+  Manual installation/reinstallation is the available update path.
+- Helper replacement retries Windows sharing failures for at most two seconds
+  before reporting actionable instructions; failure cleans up its staged file
+  and preserves the existing helper before mod replacement begins. Native
+  executable-sharing behavior remains to be verified.
+- All installer text reads/writes and captured Git output use explicit UTF-8.
+  Existing receipt, tamper, release-source, and backup checks are retained;
+  private tabs upgrades allow the new runtime file only when it does not exist.
+- Assistant-run WSL tests: 22 Python tests and 140 JavaScript tests pass,
+  including runtime propagation, disabled Windows updates, path policy, and
+  bounded replacement failure. Native Windows manual installation remains open.
+- Unusual Unicode, space, and punctuation paths are covered by dedicated
+  tests; shared installer fixtures retain ordinary directory names. Upgrade
+  coverage verifies that the generated runtime file may be added to older
+  installations without overwriting unreceipted local files. Native checks
+  stage the actual generated runtime configuration for both mods.
+- Real WSL `herdr-app check` for the main mod timed out after 120 seconds;
+  this is not a pass. Installer tests stub the native check; generated private
+  tabs and the real native Herdr UI still need validation.
+- Native Windows test follow-up (user-reported): all requested tests pass.
+  Windows installer unit tests skip the Unix shell-fixture cases; this does
+  not establish successful native installation, executable-sharing behavior,
+  or Herdr UI validation. Those manual checks remain open.
 
 ## 5. Make state storage safe on Windows
 

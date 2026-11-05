@@ -499,10 +499,37 @@ Rust tests use disposable repositories and fake core commands. They exercise
 persisted notes, anchoring, literal paths, symlinks, parallel writes, worktree
 isolation and delivery failure handling without contacting a real agent.
 
-### Native Windows helper tests
+### Native Windows installation and helper tests
 
-Windows support is in development; the installer/updater and native ordering
-fixtures are not yet ported. To test the Rust helper, select the real Python
+Windows support is in development. The installer now supports `.exe` helpers
+and generated runtime configuration; native installation/UI validation remains
+pending. Automatic updates are explicitly disabled on Windows, without gating
+review editors. Native ordering fixtures are not yet ported.
+
+For a manual native installation, set `HERDR_APP_HOME` to the **actual** Herdr
+app home containing your `mods` and `layouts`. The Windows default has not been
+verified, so the installer refuses to guess. With Git, Cargo, and the native
+`herdr-app` CLI on PATH, run from the checkout in PowerShell:
+
+```powershell
+# Set this to your actual Herdr app home, not a guessed default:
+$env:HERDR_APP_HOME = 'C:\path\to\your\herdr-app-home'
+python scripts/install.py
+# Optionally integrate a personal layout:
+python scripts/install.py --layout your-personal-layout
+```
+
+The helper installs as `~/.local/bin/herdr-annotator.exe`. Receipts, the staged
+updater, and backups retain the compatible `~/.local/share/herdr-annotator`
+location. Backups preserve the `.exe` suffix. The installer records the actual
+Python interpreter and generates `runtime.js` for both Annotator and its private
+tabs mod; full-review tabs inherit that configuration and explicit helper
+overrides. Generated configuration is receipt-protected: reconcile local edits
+before reinstalling. If Windows refuses to replace a running helper, bounded
+retries stop with instructions to close it; the old binary is preserved and
+mod replacement has not started. Reinstall manually to update for now.
+
+To test the Rust helper, select the real Python
 interpreter before running the tests from native PowerShell:
 
 ```powershell
@@ -510,6 +537,8 @@ $env:HERDR_ANNOTATOR_TEST_PYTHON = python -c "import sys; print(sys._base_execut
 cargo test --locked --lib
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
+# Installer platform-policy tests (Unix shell-fixture cases are skipped):
+& $env:HERDR_ANNOTATOR_TEST_PYTHON -m unittest discover -s tests -p test_install.py
 ```
 
 Use an absolute interpreter path, not the WindowsApps `python.exe` App Execution

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
 import * as review from "../mods/annotator/review.js";
+import { runtimeConfig } from "../mods/annotator/runtime.js";
 
 function harness(machine = null) {
   const prefix = machine ? `${machine}/` : "";
@@ -10,7 +11,7 @@ function harness(machine = null) {
     tabs: [{ id: `${prefix}t1`, active: true }], panes: [] };
   const owner = {};
   const cx = { notify() {}, spawn(fn) { state.jobs.push(() => fn(cx)); } };
-  const context = { ...review,
+   const context = { ...review, runtimeConfig, home: () => "/home/test",
     spaces: () => [{ id: `${prefix}s1`, active: true, machine, folder: state.repo, tabs: state.tabs }],
     panes: () => state.panes, focused: () => ({ space: `${prefix}s1`, tab: `${prefix}t1`, pane: `${prefix}p1` }),
     agents: () => [{ address: `${prefix}a1`, space: `${prefix}s1`, tab: `${prefix}t1`, pane: `${prefix}p1` }],
@@ -36,7 +37,8 @@ for (const machine of [null, "remote"]) test(`direct full review pins source wit
   const prefix = machine ? `${machine}/` : "";
   assert.equal(args.mod, "annotator"); assert.equal(args.props.presentation, "full");
   assert.deepEqual(args.props.scope, { repo: "/checkout", machine });
-  assert.equal(args.props.tab, `${prefix}t1`); assert.equal(args.props.source_target, `${prefix}a1`);
+   assert.equal(args.props.tab, `${prefix}t1`); assert.equal(args.props.source_target, `${prefix}a1`);
+   assert.equal(args.props.runtime.helper, "/home/test/.local/bin/herdr-annotator");
   assert.equal(h.state.commands[1].name, "pane.focus");
   assert.equal(h.state.commands[1].args.pane, `${prefix}p2`);
   assert.equal(h.state.shared["annotator.fullTabs"][`${prefix}t2`].sourceTab, `${prefix}t1`);

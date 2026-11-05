@@ -74,3 +74,20 @@ test("reload resumes a worker instead of opening editors or launching another in
   assert.equal(next.running, true); assert.equal(h.calls.filter(c => c.argv[1] === "start").length, 1);
   next.close(); assert.ok(h.timers.every(t => t.cancelled));
 });
+
+test("recorded Python interpreter is invoked with literal paths", async () => {
+  const h = harness(); h.env.python = "C:\\Python (中文)\\python.exe";
+  const view = h.make(); await view.command("status");
+  assert.equal(h.calls[0].binary, h.env.python);
+  assert.deepEqual(h.calls[0].argv, [h.env.script, "status", "--app-home", h.env.appHome]);
+});
+
+test("unsupported Windows updater never starts a process or blocks review views", async () => {
+  const h = harness(); h.env.updatesEnabled = false;
+  h.env.storage.setItem("annotator.updateGate", "true");
+  const view = h.make(); view.publish(false); view.init(h.cx);
+  view.check(h.cx, true); view.start(h.cx); view.poll(h.cx); await h.drain();
+  assert.equal(view.running, false);
+  assert.equal(h.calls.length, 0); assert.equal(h.timers.length, 0);
+  assert.match(view.state.error, /not supported on Windows/);
+});

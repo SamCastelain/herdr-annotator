@@ -13,7 +13,8 @@ export class UpdateController {
     this.checking = false; this.polling = false;
   }
 
-  get running() { return this.env.storage.getItem(GATE) === "true"; }
+  get enabled() { return this.env.updatesEnabled !== false; }
+  get running() { return this.enabled && this.env.storage.getItem(GATE) === "true"; }
   get state() { return this.env.shared(STATE) ?? {}; }
   views() { return JSON.parse(this.env.storage.getItem(VIEWS) ?? "{}"); }
   publish(blocked) {
@@ -32,7 +33,8 @@ export class UpdateController {
   }
 
   async command(command, args = []) {
-    const result = await this.env.exec("python3", [this.env.script, command, "--app-home", this.env.appHome, ...args]);
+    if (!this.enabled) throw new Error("Automatic updates are not supported on Windows yet; rerun the installer manually.");
+    const result = await this.env.exec(this.env.python ?? "python3", [this.env.script, command, "--app-home", this.env.appHome, ...args]);
     let value;
     try { value = JSON.parse(result.stdout); }
     catch { throw new Error(result.stderr || "Updater returned no JSON"); }
@@ -41,6 +43,7 @@ export class UpdateController {
   }
 
   init(cx) {
+    if (!this.enabled) { this.check(cx); return; }
     if (!this.env.storage.getItem(BOOT)) {
       // A worker survives app restarts. Inspect its durable lock before the
       // first view accepts new drafts, even if shared state never reached disk.
@@ -52,6 +55,7 @@ export class UpdateController {
   }
 
   check(cx, force = false) {
+    if (!this.enabled) { this.save({ error: "Automatic updates are not supported on Windows yet; rerun the installer manually.", latest: null }); cx.notify(); return; }
     if (this.checking || this.running || (!force && Date.now() - (this.state.checkedAt ?? 0) < DAY)) return;
     this.checking = true;
     cx.spawn(async cx => {
@@ -66,6 +70,7 @@ export class UpdateController {
   }
 
   start(cx) {
+    if (!this.enabled) return;
     if (this.running || !this.state.latest) return;
     if (this.blockers()) { this.save({ error: "Save/cancel drafts in all review views and wait for active operations before updating.", open: true }); cx.notify(); return; }
     const release = this.state.latest;
@@ -84,6 +89,7 @@ export class UpdateController {
   }
 
   poll(cx) {
+    if (!this.enabled) return;
     if (this.pollTimer) return;
     const tick = cx => {
       if (this.polling) return;

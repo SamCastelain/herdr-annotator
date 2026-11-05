@@ -1,4 +1,5 @@
-import { spaces, panes, focused, agents, exec, run, layout, shared, setShared } from "herdr";
+import { spaces, panes, focused, agents, exec, run, layout, shared, setShared, home } from "herdr";
+import { runtimeConfig } from "./runtime.js";
 import { reviewLocation, sessionTarget, layoutSidebar, existingReviewTab } from "./review.js";
 
 // Capture before creating the tab: focus and the active checkout change afterward.
@@ -19,7 +20,7 @@ export function openReview(owner, cx) {
   const sourcePanel = layoutSidebar(layout());
   const args = { name: "Review", space: current.space, mod: "annotator",
     props: { presentation: "full", scope: current.scope, space: current.space,
-      tab: current.tab, source_target: target?.address ?? null } };
+      tab: current.tab, source_target: target?.address ?? null, runtime: runtimeConfig(home()) } };
   owner.openingReview = true; owner.reviewError = null; cx.notify();
   cx.spawn(async cx => {
     try {

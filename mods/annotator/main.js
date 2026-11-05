@@ -8,6 +8,7 @@ import { DraftLifecycle } from "./draft.js";
 import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
 import { UpdateController } from "./updates.js";
+import { runtimeConfig } from "./runtime.js";
 import { escapeText, copiedDiff, copiedSelection } from "./review.js";
 import { reviewOrderKey, orderedReviewFiles, existingReviewTab, deliveryBlocker, reviewTargetReady, reviewedDraft } from "./review.js";
 
@@ -63,8 +64,9 @@ export default class Annotator extends View {
     this.blankReviewNote = this.createReviewNote();
     this.ensureReviewNote(contextKey());
     this.handle = cx.focus_handle();
+    this.runtime = runtimeConfig(home(), props());
     this.updates = new UpdateController({ exec, shared, setShared, storage: sessionStorage,
-      script: `${home()}/.local/share/herdr-annotator/update.py`, appHome: appHome(),
+      ...this.runtime, appHome: appHome(),
       ready: cx => { if (!this.closed && !this.data && !this._busy) this.refresh(cx); } });
     this.publishUpdateState(); this.updates.init(cx);
     this.refresh(cx);
@@ -84,7 +86,7 @@ export default class Annotator extends View {
     });
   }
 
-  helper() { return props()?.helper ?? `${home()}/.local/bin/herdr-annotator`; }
+  helper() { return runtimeConfig(home(), props()).helper; }
 
   selectableText(id, text) {
     // Plain content only: never interpret comments as HTML/Markdown or load
@@ -858,7 +860,8 @@ export default class Annotator extends View {
         space: current.space, tab: current.tab, source_target: target?.address ?? null,
          file: this.open, base_explicit: this.baseExplicit, context_lines: this.contextLines, view: this.view,
          source_draft: this.hasDraft(),
-        ...(props()?.helper ? { helper: props().helper } : {}) } };
+         runtime: runtimeConfig(home(), props()),
+         ...(props()?.helper ? { helper: props().helper } : {}) } };
     const sourcePanel = layoutSidebar(layout());
     this.openingFull = true;
     cx.spawn(async cx => {

@@ -7,6 +7,7 @@ import * as syntax from "../mods/annotator/syntax.js";
 import { DraftLifecycle } from "../mods/annotator/draft.js";
 import { GithubRefresh } from "../mods/annotator/github-refresh.js";
 import { UpdateController } from "../mods/annotator/updates.js";
+import { runtimeConfig } from "../mods/annotator/runtime.js";
 
 function harness() {
   const nodes = [], requests = [], jobs = [];
@@ -56,7 +57,7 @@ function harness() {
   } }, spawn(fn) { jobs.push(Promise.resolve().then(() => fn(cx))); } };
   const storage = new Map();
   const context = {
-    ...review, ...syntax, DraftLifecycle, GithubRefresh, UpdateController,
+    ...review, ...syntax, DraftLifecycle, GithubRefresh, UpdateController, runtimeConfig,
     sessionStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     View: class {}, div: node, h_flex: node, v_flex: node, v_resizable: node, h_resizable: node,
     resizable_panel: () => { state.panelCalls = (state.panelCalls ?? 0) + 1; return node(); },
@@ -818,7 +819,11 @@ test("large file lists build only visible rows and select by stable path", async
 });
 
 test("Open full review pins checkout, comparison, file and exact source chat", async () => {
-  const h = harness(); h.mod.init({}, h.cx); await h.drain();
+  const h = harness();
+  h.state.props = { helper: "C:\\tools\\helper.exe", runtime: {
+    python: "C:\\Python\\python.exe", script: "C:\\state\\update.py", updatesEnabled: false,
+  } };
+  h.mod.init({}, h.cx); await h.drain();
   h.mod.data.snapshot.scope.comparison = { mode: "branch", base: "origin/main" };
   h.mod.openFull(h.cx); await h.drain();
   const command = h.state.commands[0];
@@ -829,6 +834,9 @@ test("Open full review pins checkout, comparison, file and exact source chat", a
   assert.equal(command.args.props.tab, "tab1");
   assert.equal(command.args.props.file, "a.rs");
   assert.equal(command.args.props.scope.comparison.base, "origin/main");
+  assert.equal(command.args.props.runtime.helper, h.state.props.helper);
+  assert.equal(command.args.props.runtime.python, h.state.props.runtime.python);
+  assert.equal(command.args.props.runtime.updatesEnabled, false);
   h.mod.editor.set_value("draft"); h.mod.openFull(h.cx);
   assert.equal(h.state.commands.filter(c => c.name === "tab.new").length, 1);
   assert.equal(h.state.commands.at(-1).name, "pane.focus");
