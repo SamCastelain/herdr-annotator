@@ -89,12 +89,56 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let result = (|| {
         file.write_all(data)?;
         file.sync_all()?;
+        drop(file);
         fs::rename(&temp, path)?;
         // Persist the rename as well as file data on supported Unix filesystems.
-        File::open(path.parent().unwrap_or(Path::new(".")))?.sync_all()
+        // Windows does not support opening directories with File::open. File
+        // data is synced above; directory-entry durability is not promised there.
+        #[cfg(unix)]
+        File::open(path.parent().unwrap_or(Path::new(".")))?.sync_all()?;
+        Ok::<(), std::io::Error>(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
     result.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_writes_create_and_replace_without_leaving_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"replacement").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_replacement_preserves_destination_and_removes_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("directory.json");
+        fs::create_dir(&path).unwrap();
+        assert!(write_atomic(&path, b"not a directory").is_err());
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn state_lock_excludes_other_handles_and_releases_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, _) = lock_state(dir.path(), "review").unwrap();
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.path().join("review.lock"))
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+        drop(first);
+        fs2::FileExt::try_lock_exclusive(&second).unwrap();
+    }
 }

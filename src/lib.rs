@@ -4,6 +4,7 @@ mod github;
 mod model;
 mod ordering;
 mod ordering_models;
+mod platform;
 mod preparation;
 mod process;
 mod question;
@@ -25,15 +26,7 @@ impl Engine {
     }
 
     pub fn default_state_dir() -> Result<PathBuf> {
-        if let Some(path) = std::env::var_os("HERDR_ANNOTATOR_STATE_DIR") {
-            return Ok(path.into());
-        }
-        if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-            return Ok(PathBuf::from(path).join("herdr-annotator"));
-        }
-        std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".local/state/herdr-annotator"))
-            .ok_or("HOME is unset; set HERDR_ANNOTATOR_STATE_DIR".into())
+        platform::state_dir()
     }
 
     pub fn handle(&self, request: Request) -> Result<Value> {

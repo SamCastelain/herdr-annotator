@@ -11,22 +11,29 @@ Windows support for the host UI, terminals, file watching, and commands.
 The main work is in Annotator's helper, installation, update machinery,
 and path handling—not a rewrite of the GPUI interface.
 
-This plan is based on source inspection. Windows behavior has not yet been
-verified. Confirm the installed Windows Herdr APIs and configuration paths
-before committing to platform conventions.
+Windows and WSL now have independent checkouts, synchronized through a shared
+GitHub fork. The user can run tests on both sides; Rust and Python currently
+fail on Windows. Native Herdr behavior and Windows configuration paths still
+need verification.
 
 ## 1. Establish a native Windows baseline
 
-- [ ] Provision a Windows development/test environment with Herdr App,
-      herdr-core (`hc`), Git for Windows, Rust, Python 3, and Node.js 22+.
+- [x] Set up independent Windows and WSL checkouts with a shared GitHub fork.
+- [x] Provision native Windows tooling sufficient to invoke the Rust,
+      Python, and JavaScript test suites (user-reported).
+- [ ] Verify Windows Herdr App, herdr-core (`hc`), tool versions, and native
+      desktop execution independently of the test tooling.
 - [ ] Install and authenticate `gh` for optional GitHub integration tests.
 - [ ] Record Windows Herdr's actual app-home location, `home()` and
       `appHome()` values, command discovery, and `exec` behavior.
-- [ ] Confirm the supported Rust target/toolchain and build prerequisites.
+- [ ] Record the Windows Rust target/toolchain and build prerequisites.
 - [ ] Inventory native executable and npm launcher forms for optional AI
       runners; do not assume `.cmd` files execute like Unix scripts.
-- [ ] Run the existing checks to capture compile failures and nonportable
-      test assumptions before changing implementation.
+- [x] Run the existing checks on both sides before implementation. The user
+      reports Windows Rust/Python failures; the WSL Rust, Python, and
+      JavaScript suites pass.
+- [ ] Capture exact Windows failures and classify compile errors separately
+      from test fixture/runtime failures.
 
 ## 2. Add a Windows subprocess backend
 
@@ -60,9 +67,9 @@ Primary file: `src/process.rs`.
 Primary files: `src/executables.rs`, `src/git.rs`, `src/github.rs`,
 `src/ordering.rs`, and `src/ordering_models.rs`.
 
-- [ ] Replace unconditional Unix permission checks with platform-specific
+- [x] Replace unconditional Unix permission checks with platform-specific
       executable validation.
-- [ ] Resolve the user's home on Windows without requiring `HOME`.
+- [x] Resolve the user's home on Windows without requiring `HOME`.
 - [ ] Search Windows executable extensions and appropriate user install
       locations while retaining explicit environment overrides.
 - [ ] Keep installer-recorded executable paths as the preferred discovery
@@ -109,11 +116,11 @@ Primary files: `scripts/install.py` and `mods/annotator/main.js`.
 
 Primary files: `src/lib.rs` and `src/store.rs`.
 
-- [ ] Add a Windows default state directory without requiring `HOME`.
+- [x] Add a Windows default state directory without requiring `HOME`.
       Preserve `HERDR_ANNOTATOR_STATE_DIR` and existing Unix conventions.
 - [ ] Keep Unix file modes behind Unix configuration gates and document
       the Windows permissions model used for private review data.
-- [ ] Gate directory syncing in `write_atomic` by platform or use a
+- [x] Gate directory syncing in `write_atomic` by platform or use a
       supported equivalent. The current unconditional directory open/sync
       must not turn successful Windows writes into reported failures.
 - [ ] Verify replacement of existing state files, temporary-file cleanup,
@@ -235,6 +242,34 @@ Primary files: `.github/workflows/check.yml`, `tests/ordering.rs`,
       tests; state remaining limitations explicitly.
 
 ## Delivery milestones
+
+### Increment 1: portability foundations
+
+- Implemented shared home/state resolution in `src/platform.rs`. Windows
+  state uses `%LOCALAPPDATA%/herdr-annotator`, falling back to the profile's
+  `AppData/Local/herdr-annotator`; an explicit state override wins.
+- Installer receipts remain at the existing home-relative
+  `.local/share/herdr-annotator/install.json` location until installation
+  paths are ported together with the installer.
+- Executable discovery now gates Unix permissions, searches native `.exe`
+  and `.com` candidates on Windows, and adds Windows tool directories.
+  npm/batch launcher invocation and full discovery validation remain open.
+- Atomic state writes close the temporary file before replacement and sync
+  directory entries only on Unix. Windows uses inherited filesystem ACLs;
+  this does not add Unix-style private modes or a Windows directory-durability
+  guarantee.
+- Platform selection uses `#[cfg(windows)]` / `#[cfg(unix)]` implementations;
+  platform-specific tests run on their native platform, not through runtime
+  platform booleans. Fake environment lookups keep tests isolated.
+- Added environment-independent path tests and platform-portable storage,
+  locking, and executable validation tests. Native Windows verification is
+  still pending; the Unix-only subprocess backend and test fixtures still
+  prevent the full Windows Rust suite from compiling.
+- WSL validation: all 88 Rust tests pass (8 new on Unix), as do formatting and
+  Clippy with warnings denied. The unchanged JavaScript and Python suites
+  passed the baseline run (136 and 17 tests respectively).
+- Next increment: isolate shared subprocess policy from Unix mechanics and
+  implement a Windows backend with bounded capture and child-tree cleanup.
 
 ### Milestone A: usable native Windows reviews
 
