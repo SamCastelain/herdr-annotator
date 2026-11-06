@@ -253,7 +253,7 @@ export function renderFull(self, cx) {
     .child(v_flex().flex_none().px(16).py(8).bg(t.chrome).child(self.reviewNoteComposer()))
     .child(h_flex().h(60).flex_none().px(16).gap(12).items_center().bg(t.chrome).border_t(1).border_color(t.border)
       .child(v_flex().flex_1().min_w(0).gap(3)
-        .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${target.address} · ${target.status}` : "Source chat unavailable · sending disabled"))
+        .child(div().id("full-recipient").truncate().font_semibold().text_size(12).child(target ? `To source session · ${self.recipientLabel(target)} · ${target.status}` : "Source chat unavailable · sending disabled").tooltip(target?.address ?? ""))
         .when(Boolean(self.snapshotError || self.reviewNote.uncertain || (target && !reviewTargetReady(target))), el => el
           .child(div().text_size(11).text_color(t.ansi3).child(self.snapshotError ? "Refresh failed. Review actions paused." : deliveryBlocker(target, false, self.reviewNote.uncertain)))))
       .child(self.button("full-export", "Export…", cx => self.act("export", { threads: [...self.threadQueue.values()] }, cx), batch > 0))

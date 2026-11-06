@@ -9,6 +9,7 @@ import { GithubRefresh } from "./github-refresh.js";
 import { reviewLocation } from "./review.js";
 import { UpdateController } from "./updates.js";
 import { runtimeConfig } from "./runtime.js";
+import { sessionLabel } from "./review.js";
 import { escapeText, copiedDiff, copiedSelection } from "./review.js";
 import { reviewOrderKey, orderedReviewFiles, existingReviewTab, deliveryBlocker, reviewTargetReady, reviewedDraft } from "./review.js";
 
@@ -489,7 +490,7 @@ export default class Annotator extends View {
     return v_flex().id("question-composer").p(10).gap(6).flex_none().bg(theme().surface)
       .child(div().font_semibold().text_size(12).child(`Ask · ${draft.path} · ${draft.context.kind}`))
       .child(Textarea.new(draft.editor).h(70).w_full())
-      .child(div().text_size(11).text_color(theme().muted).child(target ? `To ${target.address} · ${target.status}` : "Source chat unavailable"))
+      .child(div().text_size(11).text_color(theme().muted).child(target ? `To ${this.recipientLabel(target)} · ${target.status}` : "Source chat unavailable").tooltip(target?.address ?? ""))
       .when(Boolean(draft.error), el => el.child(div().text_size(11).text_color(theme().ansi3).child(draft.error)))
       .when(draft.status === "uncertain", el => el.child(div().text_size(11).text_color(theme().ansi3).child("Delivery is uncertain. Check the chat before retrying. Do not change the question or recipient.")))
       .child(h_flex().gap(5)
@@ -758,6 +759,8 @@ export default class Annotator extends View {
     });
     cx.notify();
   }
+
+  recipientLabel(target) { return sessionLabel(target, spaces()); }
 
   currentSession() {
     const current = location();
@@ -1262,7 +1265,7 @@ export default class Annotator extends View {
         .child(h_flex().gap(7).items_center()
           .child(h_flex().size(27).rounded(7).bg(t.accent + "18").text_color(t.accent).items_center().justify_center().font_semibold().child("↗"))
           .child(v_flex().flex_1().min_w(0).gap(1)
-            .child(div().id("review-session").font_semibold().text_size(12).truncate().child(target ? `To ${chat} · ${target.address}` : "No chat selected"))
+            .child(div().id("review-session").font_semibold().text_size(12).truncate().child(target ? `To ${chat} · ${this.recipientLabel(target)}` : "No chat selected").tooltip(target?.address ?? ""))
             .child(div().text_size(10.5).text_color(t.dim).child(`${pending.length} comments · ${this.threadQueue.size} GitHub threads ready`)))
           .when(Boolean(target), el => el.child(this.badge(target.status === "idle" ? "Ready" : target.status === "blocked" ? "Needs you" : "Working", target.status === "idle" ? t.ansi2 : t.ansi3)))
           .child(this.button("export-review", "Export…", cx => this.act("export", { threads: [...this.threadQueue.values()] }, cx), batchSize > 0)))

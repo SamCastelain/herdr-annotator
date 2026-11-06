@@ -82,6 +82,15 @@ export function sessionTarget(list, context, focus, remembered = null) {
     ?? (candidates.length === 1 ? candidates[0] : null);
 }
 
+// Display only: resolve the recipient's tab, never the currently focused tab.
+// Machine-qualified IDs must match exactly, just as they do for delivery.
+export function sessionLabel(target, spaceList) {
+  if (!target) return "";
+  const tab = spaceList.find(space => space.id === target.space)?.tabs?.find(tab => tab.id === target.tab);
+  const name = tab?.name ?? tab?.title;
+  return typeof name === "string" && name.trim() ? name : target.address;
+}
+
 export function fileStats(file) {
   return { added: file.rows.filter(r => r.kind === "add").length,
     removed: file.rows.filter(r => r.kind === "delete").length };

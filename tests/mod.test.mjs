@@ -20,6 +20,7 @@ function harness() {
       if (key === "then") return undefined;
       return (...args) => {
         if (key === "id") data.id = args[0];
+        else if (key === "tooltip") data.tooltip = args[0];
         else if (key === "selectable") data.selectable = args[0];
         else if (key === "opacity") data.opacity = args[0];
         else if (key === "transition") data.transition = args;
@@ -86,7 +87,7 @@ function harness() {
     props: () => ({ scope: state.scope, space: "space1", tab: state.tab, ...state.props }),
     theme: () => ({ dim: "#666666", ansi1: "#ff0000", ansi2: "#00ff00" }), settings: () => ({}),
     agents: () => state.agents, focused: () => state.focus,
-    spaces: () => [{ id: "space1", tabs: [{ id: state.tab }, ...(state.reviewTabs ?? [])] }],
+    spaces: () => [{ id: "space1", tabs: [{ id: state.tab, name: state.tabName }, ...(state.reviewTabs ?? [])] }],
     panes: () => state.reviewPanes ?? [],
     home: () => "/home/me", exec: async (_helper, args) => {
       if (_helper === "python3") return { code: 0, stdout: JSON.stringify({ ok: true, data: { current: "0.2.0", latest: null, checked_at: Date.now() / 1000, job: {} } }) };
@@ -109,6 +110,20 @@ function harness() {
   const drain = async () => { while (jobs.length) await Promise.all(jobs.splice(0)); };
   return { mod, nodes, requests, state, cx, drain, snapshot };
 }
+
+for (const full of [false, true]) test(`${full ? "full review" : "sidebar"} shows the source tab name without changing the delivery address`, async () => {
+  const h = harness(); h.state.tabName = "My workflow";
+  h.state.props = full ? { presentation: "full", source_target: "t7", tab: "tab1" } : {};
+  h.mod.init({}, h.cx); await h.drain();
+  h.mod.render(h.cx);
+  const recipient = h.nodes.find(node => node.id === (full ? "full-recipient" : "review-session"));
+  assert.ok(recipient.children.some(text => typeof text === "string" && text.includes("My workflow")));
+  assert.equal(recipient.tooltip, "t7");
+  h.state.tabName = "Renamed workflow";
+  assert.equal(h.mod.recipientLabel(h.mod.currentSession()), "Renamed workflow");
+  h.mod.sendToSession(h.cx); await h.drain();
+  assert.equal(h.requests.find(request => request.op === "send").target, "t7");
+});
 
 test("saving sends the reviewed source anchor and keeps text on stale-code refusal", async () => {
   const h = harness(); h.mod.init({}, h.cx); await h.drain();
